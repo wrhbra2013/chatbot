@@ -1,0 +1,80 @@
+{
+  "eletronicos": [
+    {
+      "id": "fone1",
+      "nome": "Fone Bluetooth X100",
+      "preco": 89.90,
+      "descricao": "Fone sem fio com cancelamento de ruído, bateria 40h",
+      "imagem": "https://picsum.photos/seed/fone1/400/400",
+      "estoque": 15
+    },
+    {
+      "id": "carregador1",
+      "nome": "Carregador Turbo 65W",
+      "preco": 129.90,
+      "descricao": "Carregador rápido USB-C para notebooks e celulares",
+      "imagem": "https://picsum.photos/seed/carregador1/400/400",
+      "estoque": 20
+    },
+    {
+      "id": "caixa1",
+      "nome": "Caixa de Som Portátil",
+      "preco": 159.90,
+      "descricao": "Bluetooth 5.3, à prova d'água, 20W de potência",
+      "imagem": "https://picsum.photos/seed/caixa1/400/400",
+      "estoque": 10
+    }
+  ],
+  "moda": [
+    {
+      "id": "camisa1",
+      "nome": "Camisa Polo Premium",
+      "preco": 79.90,
+      "descricao": "Algodão egípcio, disponível em 5 cores",
+      "imagem": "https://picsum.photos/seed/camisa1/400/400",
+      "estoque": 25
+    },
+    {
+      "id": "tenis1",
+      "nome": "Tênis Esportivo Air",
+      "preco": 249.90,
+      "descricao": "Tênis leve com amortecimento, tamanhos 38-44",
+      "imagem": "https://picsum.photos/seed/tenis1/400/400",
+      "estoque": 8
+    },
+    {
+      "id": "mochila1",
+      "nome": "Mochila Executiva 45L",
+      "preco": 199.90,
+      "descricao": "Couro sintético, compartimento para notebook 17\"",
+      "imagem": "https://picsum.photos/seed/mochila1/400/400",
+      "estoque": 12
+    }
+  ],
+  "casa": [
+    {
+      "id": "lampada1",
+      "nome": "Lâmpada Inteligente RGB",
+      "preco": 49.90,
+      "descricao": "Wi-Fi, compatível com Alexa e Google Home",
+      "imagem": "https://picsum.photos/seed/lampada1/400/400",
+      "estoque": 30
+    },
+    {
+      "id": "cadeira1",
+      "nome": "Cadeira Gamer Pro",
+      "preco": 899.90,
+      "descricao": "Reclinável 180°, apoio lombar, couro premium",
+      "imagem": "https://picsum.photos/seed/cadeira1/400/400",
+      "estoque": 5
+    },
+    {
+      "id": "vaso1",
+      "nome": "Vaso Decorativo 30cm",
+      "preco": 39.90,
+      "descricao": "Cerâmica artesanal, acabamento fosco",
+      "imagem": "https://picsum.photos/seed/vaso1/400/400",
+      "estoque": 18
+    }
+  ]
+}
