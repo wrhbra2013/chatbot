@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Carrinho - Loja Online</title>
+    <link rel="icon" type="image/png" href="../static/icon/favicon.ico">
+    <link rel="stylesheet" href="../static/css/style.css?v=1.0.0">
+</head>
+<body>
+    <div id="banner-comercial"></div>
+    <div id="header-placeholder"></div>
+
+    <main class="main-content">
+        <div class="container">
+            <h2>🛒 Meu Carrinho</h2>
+            <div id="carrinho-container" class="card"></div>
+            <div id="carrinho-vazio" style="display:none;">
+                <div class="card text-center">
+                    <p style="font-size:1.2rem;color:#666;">Seu carrinho está vazio.</p>
+                    <a href="produtos.html" class="btn mt-1">Ver Produtos</a>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="modal-pedido" class="modal">
+        <div class="modal-content">
+            <h2>Finalizar Pedido</h2>
+            <form id="form-finalizar" onsubmit="finalizarPedido(event)">
+                <div class="form-group">
+                    <label>Nome completo</label>
+                    <input type="text" id="pedido-nome" required>
+                </div>
+                <div class="form-group">
+                    <label>Telefone (WhatsApp)</label>
+                    <input type="tel" id="pedido-telefone" required placeholder="(14) 99999-9999">
+                </div>
+                <div class="form-group">
+                    <label>Forma de pagamento</label>
+                    <select id="pedido-pagamento">
+                        <option value="pix">Pix</option>
+                        <option value="credito">Cartão de Crédito</option>
+                        <option value="debito">Cartão de Débito</option>
+                        <option value="dinheiro">Dinheiro</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Observações</label>
+                    <textarea id="pedido-obs" rows="3"></textarea>
+                </div>
+                <div id="pedido-preview" class="mb-1"></div>
+                <button type="submit" class="btn btn-success">Confirmar Pedido</button>
+                <button type="button" class="btn btn-outline" onclick="fecharModal()">Cancelar</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="footer-placeholder"></div>
+
+    <script src="../static/js/storage.js?v=1.0.0"></script>
+    <script src="../static/js/components.js?v=1.0.0"></script>
+    <script>
+        var carrinhoAtual = [];
+
+        function carregarCarrinho() {
+            try {
+                carrinhoAtual = JSON.parse(localStorage.getItem('carrinho_temp') || '[]');
+            } catch(e) {
+                carrinhoAtual = [];
+            }
+            renderizarCarrinho();
+        }
+
+        function renderizarCarrinho() {
+            var container = document.getElementById('carrinho-container');
+            var vazio = document.getElementById('carrinho-vazio');
+
+            if (!carrinhoAtual || carrinhoAtual.length === 0) {
+                container.style.display = 'none';
+                vazio.style.display = 'block';
+                return;
+            }
+
+            container.style.display = 'block';
+            vazio.style.display = 'none';
+
+            var html = '';
+            var total = 0;
+
+            carrinhoAtual.forEach(function(item, idx) {
+                var subtotal = parseFloat(item.preco) * (item.qtd || 1);
+                total += subtotal;
+                html += '<div class="carrinho-item">' +
+                    '<div><strong>' + item.nome + '</strong><br><small>R$ ' + item.preco.toFixed(2).replace('.', ',') + ' un.</small></div>' +
+                    '<div class="flex gap-1" style="align-items:center;">' +
+                    '<button class="btn btn-sm btn-outline" onclick="alterarQtd(' + idx + ', -1)">-</button>' +
+                    '<span>' + (item.qtd || 1) + '</span>' +
+                    '<button class="btn btn-sm btn-outline" onclick="alterarQtd(' + idx + ', 1)">+</button>' +
+                    '<span style="font-weight:bold;margin-left:1rem;">R$ ' + subtotal.toFixed(2).replace('.', ',') + '</span>' +
+                    '<button class="btn btn-sm btn-danger" onclick="removerItem(' + idx + ')">✕</button>' +
+                    '</div></div>';
+            });
+
+            html += '<div class="carrinho-total">Total: R$ ' + total.toFixed(2).replace('.', ',') + '</div>';
+            html += '<div class="flex gap-1" style="justify-content:flex-end;">' +
+                '<button class="btn btn-danger" onclick="limparCarrinho()">🗑️ Limpar</button>' +
+                '<button class="btn btn-success" onclick="abrirModal()">✅ Finalizar Pedido</button>' +
+                '</div>';
+
+            container.innerHTML = html;
+        }
+
+        function alterarQtd(idx, delta) {
+            if (!carrinhoAtual[idx]) return;
+            carrinhoAtual[idx].qtd = Math.max(1, (carrinhoAtual[idx].qtd || 1) + delta);
+            salvarCarrinho();
+        }
+
+        function removerItem(idx) {
+            carrinhoAtual.splice(idx, 1);
+            salvarCarrinho();
+        }
+
+        function limparCarrinho() {
+            if (!confirm('Limpar carrinho?')) return;
+            carrinhoAtual = [];
+            salvarCarrinho();
+        }
+
+        function salvarCarrinho() {
+            localStorage.setItem('carrinho_temp', JSON.stringify(carrinhoAtual));
+            renderizarCarrinho();
+        }
+
+        function abrirModal() {
+            var total = carrinhoAtual.reduce(function(s, i) { return s + parseFloat(i.preco) * (i.qtd || 1); }, 0);
+            var preview = carrinhoAtual.map(function(i) {
+                return i.nome + ' x' + (i.qtd || 1) + ' = R$ ' + (parseFloat(i.preco) * (i.qtd || 1)).toFixed(2).replace('.', ',');
+            }).join('<br>');
+            preview += '<br><strong>Total: R$ ' + total.toFixed(2).replace('.', ',') + '</strong>';
+
+            document.getElementById('pedido-preview').innerHTML = preview;
+            document.getElementById('modal-pedido').classList.add('active');
+        }
+
+        function fecharModal() {
+            document.getElementById('modal-pedido').classList.remove('active');
+        }
+
+        async function finalizarPedido(e) {
+            e.preventDefault();
+
+            var nome = document.getElementById('pedido-nome').value.trim();
+            var telefone = document.getElementById('pedido-telefone').value.trim();
+            var pagamento = document.getElementById('pedido-pagamento').value;
+            var obs = document.getElementById('pedido-obs').value.trim();
+
+            if (!nome || !telefone) {
+                alert('Preencha nome e telefone.');
+                return;
+            }
+
+            var total = carrinhoAtual.reduce(function(s, i) { return s + parseFloat(i.preco) * (i.qtd || 1); }, 0);
+
+            var pedido = {
+                cliente_nome: nome,
+                cliente_telefone: telefone.replace(/\D/g, ''),
+                itens: JSON.stringify(carrinhoAtual),
+                total: total,
+                status: 'pendente',
+                forma_pagamento: pagamento,
+                observacoes: obs
+            };
+
+            try {
+                var result = await PedidosStore.save(pedido);
+                if (result) {
+                    var msg = '✅ *Pedido Confirmado!*\n\n';
+                    carrinhoAtual.forEach(function(i) {
+                        msg += i.nome + ' x' + (i.qtd || 1) + ' = R$ ' + (parseFloat(i.preco) * (i.qtd || 1)).toFixed(2).replace('.', ',') + '\n';
+                    });
+                    msg += '\n*Total:* R$ ' + total.toFixed(2).replace('.', ',') + '\n\nUm atendente entrará em contato para pagamento e entrega. 🚚';
+
+                    carrinhoAtual = [];
+                    localStorage.removeItem('carrinho_temp');
+
+                    alert('✅ Pedido confirmado! Um atendente entrará em contato.');
+                    fecharModal();
+                    renderizarCarrinho();
+                } else {
+                    alert('Erro ao finalizar pedido. Tente novamente.');
+                }
+            } catch (e) {
+                console.error('Erro ao finalizar pedido:', e);
+                alert('Erro ao finalizar pedido. Tente novamente.');
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', carregarCarrinho);
+    </script>
+</body>
+</html>

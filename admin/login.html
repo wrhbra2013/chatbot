@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login Admin - Loja Online</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <link rel="icon" type="image/png" href="../static/icon/favicon.ico">
+    <link rel="stylesheet" href="../static/css/style.css?v=1.0.0">
+    <style>
+        body {
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            padding: 1rem;
+        }
+        .login-container {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 2.5rem 2rem;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 420px;
+            text-align: center;
+        }
+        .logo { margin-bottom: 2rem; }
+        .logo h1 {
+            color: var(--cor-principal);
+            font-size: 2.5rem;
+            margin-bottom: 0.3rem;
+        }
+        .logo p { color: #888; font-size: 0.85rem; }
+        .qr-container { background: #f0f0f5; border-radius: 16px; padding: 1.5rem; margin-bottom: 1.5rem; }
+        .qr-code { display: flex; justify-content: center; align-items: center; min-height: 200px; }
+        .status-message {
+            padding: 1rem; border-radius: 8px; margin-bottom: 1rem;
+            font-weight: 500; display: none;
+        }
+        .status-message.aprovado { background: #d4edda; color: #155724; border-left: 4px solid #28a745; display: block; }
+        .status-message.negado { background: #f8d7da; color: #721c24; border-left: 4px solid #dc3545; display: block; }
+        .instructions { background: #e8eaf6; border-radius: 10px; padding: 1rem; margin-bottom: 1.5rem; text-align: left; font-size: 0.9rem; }
+        .instructions h3 { font-size: 1rem; color: var(--cor-principal); margin-bottom: 0.5rem; }
+        .instructions ol { margin: 0; padding-left: 1.2rem; }
+        .instructions li { margin-bottom: 0.3rem; }
+        .btn-whatsapp {
+            width: 100%; padding: 1rem; background: #25d366; color: white;
+            border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer;
+            margin-top: 0.5rem; display: none;
+        }
+        .btn-whatsapp:hover { background: #20bd5c; }
+        .btn-primary {
+            width: 100%; padding: 1rem; background: var(--cor-principal); color: white;
+            border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer;
+            transition: background 0.3s;
+        }
+        .btn-primary:hover { background: #5a52e0; }
+        .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+        .timer { display: none; color: #666; font-size: 0.9rem; margin-top: 0.5rem; }
+        .countdown { font-weight: bold; color: var(--cor-principal); }
+        .input-code-container { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid #e0e0e0; }
+        .input-code-container label { display: block; margin-bottom: 0.5rem; font-weight: 500; color: #666; }
+        .input-code-container input {
+            width: 100%; padding: 0.8rem 1rem; border: 2px solid #e0e0e0;
+            border-radius: 8px; font-size: 1.2rem; text-align: center;
+            text-transform: uppercase; letter-spacing: 0.2rem; box-sizing: border-box;
+        }
+        .input-code-container input:focus { outline: none; border-color: var(--cor-principal); }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">
+            <h1>Loja Online</h1>
+            <p>Painel Administrativo</p>
+        </div>
+        <div id="status-message" class="status-message"></div>
+        <div class="qr-container">
+            <div style="font-size:2.5rem;margin-bottom:0.5rem;">📱</div>
+            <div id="qr-code" class="qr-code">
+                <p style="color:#999;">Clique em "Gerar QR Code" para iniciar</p>
+            </div>
+        </div>
+        <div id="timer" class="timer">Expira em: <span class="countdown" id="countdown">60</span>s</div>
+        <div class="input-code-container" id="input-code-container" style="display:none;">
+            <label for="codigo-manual">Ou digite o código manualmente:</label>
+            <input type="text" id="codigo-manual" placeholder="XXXXXXXX" maxlength="8" autocomplete="off">
+        </div>
+        <button class="btn-primary" id="btn-gerar" onclick="gerarQR()">Gerar QR Code</button>
+        <button class="btn-whatsapp" id="btn-whatsapp" onclick="compartilharWhatsApp()">📱 Compartilhar via WhatsApp</button>
+    </div>
+
+    <script src="../static/js/storage.js?v=1.0.0"></script>
+    <script>
+        const SESSION_TIMEOUT = 60;
+        let currentToken = '';
+        let countdownInterval = null;
+        let pollTimeout = null;
+        let remainingTime = SESSION_TIMEOUT;
+
+        function getBaseUrl() {
+            return window.location.origin;
+        }
+
+        function showStatus(msg, type) {
+            var el = document.getElementById('status-message');
+            el.textContent = msg;
+            el.className = 'status-message ' + type;
+            el.style.display = 'block';
+        }
+
+        function hideStatus() {
+            document.getElementById('status-message').style.display = 'none';
+        }
+
+        function gerarToken() {
+            var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+            var token = '';
+            for (var i = 0; i < 8; i++) {
+                token += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return token;
+        }
+
+        function displayToken(token) {
+            var container = document.getElementById('qr-code');
+            container.innerHTML = '';
+            var qrUrl = getBaseUrl() + '/admin/aprovar.html#token=' + token;
+            new QRCode(container, {
+                text: qrUrl,
+                width: 180,
+                height: 180,
+                colorDark: '#6C63FF',
+                colorLight: '#ffffff',
+                correctLevel: QRCode.CorrectLevel.H
+            });
+        }
+
+        async function criarSessao(token) {
+            try {
+                var urlAprovacao = getBaseUrl() + '/admin/aprovar.html#token=' + token;
+                var sessao = { token: token, url_aprovacao: urlAprovacao, status: 'aguardando' };
+                var result = await apiRequest('/api/create', {
+                    method: 'POST',
+                    body: JSON.stringify({ table: 'sessoes', data: sessao })
+                });
+                return result;
+            } catch (e) {
+                console.warn('API criar sessao failed:', e);
+                return null;
+            }
+        }
+
+        async function verificarSessao(token) {
+            try {
+                var result = await apiRequest('/api/read', {
+                    method: 'POST',
+                    body: JSON.stringify({ table: 'sessoes', filters: { token: token }, limit: 1 })
+                });
+                if (result.data && result.data.length > 0) {
+                    return result.data[0].status;
+                }
+                return 'nao_encontrado';
+            } catch (e) {
+                console.warn('API verificar sessao failed:', e);
+                return 'erro';
+            }
+        }
+
+        function startTimer() {
+            var countdown = remainingTime;
+            var countdownEl = document.getElementById('countdown');
+            var timerEl = document.getElementById('timer');
+            timerEl.style.display = 'block';
+            countdownEl.textContent = countdown;
+
+            if (countdownInterval) clearInterval(countdownInterval);
+            countdownInterval = setInterval(function() {
+                countdown--;
+                remainingTime = countdown;
+                countdownEl.textContent = countdown;
+                if (countdown <= 0) {
+                    clearInterval(countdownInterval);
+                    stopPolling();
+                    timerEl.style.display = 'none';
+                    showStatus('Sessão expirada. Gere um novo código.', 'negado');
+                }
+            }, 1000);
+        }
+
+        function stopTimer() {
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+                countdownInterval = null;
+            }
+            document.getElementById('timer').style.display = 'none';
+        }
+
+        function stopPolling() {
+            if (pollTimeout) {
+                clearTimeout(pollTimeout);
+                pollTimeout = null;
+            }
+        }
+
+        async function secureLogin() {
+            var array = new Uint8Array(32);
+            crypto.getRandomValues(array);
+            var sessionToken = Array.from(array, function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+
+            try {
+                await apiRequest('/api/update', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        table: 'sessoes',
+                        id: currentToken,
+                        data: { access_token: sessionToken, status: 'aprovado', aprovado_em: new Date().toISOString() }
+                    })
+                });
+            } catch(e) {
+                console.warn('Erro ao salvar sessão na API:', e);
+            }
+
+            window.location.href = 'index.html#' + sessionToken;
+        }
+
+        async function startPolling() {
+            var checkApproval = async function() {
+                var status = await verificarSessao(currentToken);
+                if (status === 'aprovado') {
+                    stopPolling();
+                    stopTimer();
+                    showStatus('Login aprovado! Redirecionando...', 'aprovado');
+                    await secureLogin();
+                    return;
+                }
+                pollTimeout = setTimeout(checkApproval, 2000);
+            };
+            checkApproval();
+        }
+
+        async function gerarQR() {
+            await initAPI();
+            if (!API_CONFIG.token) {
+                showStatus('API não disponível. Verifique se o servidor está rodando.', 'negado');
+                return;
+            }
+
+            var btn = document.getElementById('btn-gerar');
+            btn.disabled = true;
+            btn.textContent = 'Gerando...';
+            hideStatus();
+            stopPolling();
+            stopTimer();
+            remainingTime = SESSION_TIMEOUT;
+
+            currentToken = gerarToken();
+            await criarSessao(currentToken);
+            displayToken(currentToken);
+
+            document.getElementById('input-code-container').style.display = 'block';
+            document.getElementById('codigo-manual').value = '';
+            document.getElementById('codigo-manual').focus();
+
+            var btnWhatsapp = document.getElementById('btn-whatsapp');
+            btnWhatsapp.style.display = 'block';
+            btnWhatsapp.textContent = '📱 Compartilhar link no WhatsApp';
+
+            btn.disabled = false;
+            btn.textContent = 'Gerar Novo Código';
+            startTimer();
+            startPolling();
+        }
+
+        function compartilharWhatsApp() {
+            if (!currentToken) return;
+            var mensagem = '🔐 Código de acesso admin: ' + currentToken + '\n\nAcesse: ' + getBaseUrl() + '/admin/aprovar.html#token=' + currentToken;
+            window.open('https://wa.me/?text=' + encodeURIComponent(mensagem), '_blank');
+        }
+
+        function processarLoginManual() {
+            if (!currentToken) return;
+            var inputCode = document.getElementById('codigo-manual').value.toUpperCase().trim();
+            if (inputCode === currentToken) {
+                stopPolling();
+                stopTimer();
+                showStatus('Login aprovado! Redirecionando...', 'aprovado');
+                secureLogin();
+            } else {
+                showStatus('Código incorreto. Tente novamente.', 'negado');
+                document.getElementById('codigo-manual').value = '';
+                document.getElementById('codigo-manual').focus();
+            }
+        }
+
+        document.getElementById('codigo-manual').addEventListener('input', function() {
+            this.value = this.value.toUpperCase();
+            hideStatus();
+            if (currentToken && this.value.length === currentToken.length) {
+                processarLoginManual();
+            }
+        });
+
+        document.getElementById('codigo-manual').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') processarLoginManual();
+        });
+
+        gerarQR();
+    </script>
+</body>
+</html>

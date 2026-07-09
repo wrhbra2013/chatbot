@@ -1,10 +1,12 @@
 {
   "name": "whatsapp-ecommerce",
-  "version": "1.0.0",
-  "description": "Chatbot de e-commerce para WhatsApp",
+  "version": "2.0.0",
+  "description": "Sistema de e-commerce com WhatsApp Bot + Site Estático + API",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "start:api": "node api/src/server.js",
+    "start:bot": "node index.js"
   },
   "dependencies": {
     "puppeteer": "^22.15.0",

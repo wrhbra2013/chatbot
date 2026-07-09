@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - Pedidos</title>
+    <link rel="icon" type="image/png" href="../static/icon/favicon.ico">
+    <link rel="stylesheet" href="../static/css/style.css?v=1.0.0">
+</head>
+<body>
+    <div id="header-placeholder"></div>
+
+    <main class="main-content">
+        <div class="container">
+            <h2 class="section-title">🛒 Pedidos</h2>
+            <div class="flex gap-1 mb-2">
+                <button class="btn btn-sm btn-outline" onclick="filtrar('todos')" id="filtro-todos">Todos</button>
+                <button class="btn btn-sm btn-outline" onclick="filtrar('pendente')" id="filtro-pendente">Pendentes</button>
+                <button class="btn btn-sm btn-outline" onclick="filtrar('confirmado')" id="filtro-confirmado">Confirmados</button>
+            </div>
+            <div id="pedidos-table" class="table-responsive"></div>
+        </div>
+    </main>
+
+    <div id="modal-detalhes" class="modal">
+        <div class="modal-content">
+            <h2>Detalhes do Pedido</h2>
+            <div id="detalhes-conteudo"></div>
+            <div class="mt-2">
+                <button class="btn btn-success btn-sm" onclick="alterarStatus('confirmado')">✅ Confirmar</button>
+                <button class="btn btn-danger btn-sm" onclick="alterarStatus('cancelado')">❌ Cancelar</button>
+                <button class="btn btn-outline btn-sm" onclick="fecharModalDetalhes()">Fechar</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="footer-placeholder"></div>
+
+    <script src="../static/js/storage.js?v=1.0.0"></script>
+    <script src="../static/js/components.js?v=1.0.0"></script>
+    <script src="../static/js/auth-guard.js?v=1.0.0"></script>
+    <script>
+        var filtroAtual = 'todos';
+        var pedidoSelecionado = null;
+
+        async function carregarPedidos() {
+            try {
+                var pedidos = await PedidosStore.getAll();
+                var container = document.getElementById('pedidos-table');
+
+                var filtrados = pedidos;
+                if (filtroAtual !== 'todos') {
+                    filtrados = pedidos.filter(function(p) { return p.status === filtroAtual; });
+                }
+
+                if (!filtrados || filtrados.length === 0) {
+                    container.innerHTML = '<p class="text-center">Nenhum pedido encontrado.</p>';
+                    return;
+                }
+
+                var html = '<table class="table"><thead><tr>' +
+                    '<th>Cliente</th><th>Telefone</th><th>Total</th><th>Pagamento</th><th>Status</th><th>Data</th><th>Ações</th>' +
+                    '</tr></thead><tbody>';
+                filtrados.forEach(function(p) {
+                    var statusClass = 'badge-warning';
+                    if (p.status === 'confirmado') statusClass = 'badge-success';
+                    if (p.status === 'cancelado') statusClass = 'badge-danger';
+                    var data = p.created_at ? new Date(p.created_at).toLocaleDateString('pt-BR') : '-';
+                    html += '<tr>' +
+                        '<td>' + (p.cliente_nome || '-') + '</td>' +
+                        '<td>' + (p.cliente_telefone || '-') + '</td>' +
+                        '<td>R$ ' + parseFloat(p.total || 0).toFixed(2).replace('.', ',') + '</td>' +
+                        '<td>' + (p.forma_pagamento || '-') + '</td>' +
+                        '<td><span class="badge ' + statusClass + '">' + (p.status || 'pendente') + '</span></td>' +
+                        '<td>' + data + '</td>' +
+                        '<td><button class="btn btn-sm" onclick="verDetalhes(\'' + p.id + '\')">👁️</button></td>' +
+                        '</tr>';
+                });
+                html += '</tbody></table>';
+                container.innerHTML = html;
+
+                document.querySelectorAll('[id^="filtro-"]').forEach(function(b) {
+                    b.classList.remove('btn-success');
+                    b.classList.add('btn-outline');
+                });
+                var btn = document.getElementById('filtro-' + filtroAtual);
+                if (btn) {
+                    btn.classList.remove('btn-outline');
+                    btn.classList.add('btn-success');
+                }
+            } catch (e) {
+                console.error('Erro:', e);
+                document.getElementById('pedidos-table').innerHTML = '<p class="text-center">Erro ao carregar.</p>';
+            }
+        }
+
+        function filtrar(f) {
+            filtroAtual = f;
+            carregarPedidos();
+        }
+
+        async function verDetalhes(id) {
+            var p = await PedidosStore.getById(id);
+            if (!p) return;
+            pedidoSelecionado = p;
+
+            var itens = [];
+            try { itens = JSON.parse(p.itens || '[]'); } catch(e) {}
+
+            var html = '<div class="card"><p><strong>Cliente:</strong> ' + (p.cliente_nome || '-') + '</p>' +
+                '<p><strong>Telefone:</strong> ' + (p.cliente_telefone || '-') + '</p>' +
+                '<p><strong>Pagamento:</strong> ' + (p.forma_pagamento || '-') + '</p>' +
+                '<p><strong>Status:</strong> ' + (p.status || 'pendente') + '</p>' +
+                '<p><strong>Data:</strong> ' + (p.created_at ? new Date(p.created_at).toLocaleString('pt-BR') : '-') + '</p>' +
+                (p.observacoes ? '<p><strong>Obs:</strong> ' + p.observacoes + '</p>' : '') +
+                '<h4>Itens:</h4>';
+
+            if (itens.length > 0) {
+                html += '<ul>';
+                itens.forEach(function(i) {
+                    html += '<li>' + (i.nome || 'Item') + ' x' + (i.qtd || 1) + ' - R$ ' + (parseFloat(i.preco) * (i.qtd || 1)).toFixed(2).replace('.', ',') + '</li>';
+                });
+                html += '</ul>';
+            }
+            html += '<h4>Total: R$ ' + parseFloat(p.total || 0).toFixed(2).replace('.', ',') + '</h4></div>';
+
+            document.getElementById('detalhes-conteudo').innerHTML = html;
+            document.getElementById('modal-detalhes').classList.add('active');
+        }
+
+        async function alterarStatus(status) {
+            if (!pedidoSelecionado) return;
+            if (!confirm('Alterar status para "' + status + '"?')) return;
+            try {
+                await PedidosStore.update(pedidoSelecionado.id, { status: status });
+                alert('Status atualizado!');
+                fecharModalDetalhes();
+                carregarPedidos();
+            } catch (e) {
+                alert('Erro ao atualizar.');
+            }
+        }
+
+        function fecharModalDetalhes() {
+            document.getElementById('modal-detalhes').classList.remove('active');
+            pedidoSelecionado = null;
+        }
+
+        document.addEventListener('DOMContentLoaded', carregarPedidos);
+    </script>
+</body>
+</html>

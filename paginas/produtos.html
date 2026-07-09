@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Produtos - Loja Online</title>
+    <link rel="icon" type="image/png" href="../static/icon/favicon.ico">
+    <link rel="stylesheet" href="../static/css/style.css?v=1.0.0">
+</head>
+<body>
+    <div id="banner-comercial"></div>
+    <div id="header-placeholder"></div>
+
+    <main class="main-content">
+        <div class="container">
+            <div class="flex-between mb-2">
+                <h2 id="titulo-categoria">Todos os Produtos</h2>
+                <div class="flex gap-1">
+                    <select id="filtro-categoria" class="form-group" style="width:auto;margin:0;" onchange="filtrarCategoria()">
+                        <option value="">Todas as Categorias</option>
+                        <option value="eletronicos">📱 Eletrônicos</option>
+                        <option value="moda">👕 Moda</option>
+                        <option value="casa">🏠 Casa</option>
+                    </select>
+                </div>
+            </div>
+            <div id="produtos-container" class="produtos-grid"></div>
+        </div>
+    </main>
+
+    <div id="footer-placeholder"></div>
+
+    <script src="../static/js/storage.js?v=1.0.0"></script>
+    <script src="../static/js/components.js?v=1.0.0"></script>
+    <script>
+        var carrinhoAtual = JSON.parse(localStorage.getItem('carrinho_temp') || '[]');
+
+        function getParametro(nome) {
+            var params = new URLSearchParams(window.location.search);
+            return params.get(nome);
+        }
+
+        function adicionarAoCarrinho(prod) {
+            var existente = carrinhoAtual.find(function(i) { return i.id === prod.id; });
+            if (existente) {
+                existente.qtd = (existente.qtd || 1) + 1;
+            } else {
+                carrinhoAtual.push({
+                    id: prod.id,
+                    nome: prod.nome,
+                    preco: parseFloat(prod.preco),
+                    qtd: 1,
+                    imagem: prod.imagem
+                });
+            }
+            localStorage.setItem('carrinho_temp', JSON.stringify(carrinhoAtual));
+            alert('✅ "' + prod.nome + '" adicionado ao carrinho!');
+            atualizarBadgeCarrinho();
+        }
+
+        function atualizarBadgeCarrinho() {
+            var total = carrinhoAtual.reduce(function(s, i) { return s + (i.qtd || 1); }, 0);
+        }
+
+        async function carregarProdutos() {
+            try {
+                var produtos = await ProdutosStore.getAll();
+                var container = document.getElementById('produtos-container');
+                var catFiltro = getParametro('categoria');
+                var prodFiltro = getParametro('produto');
+
+                if (catFiltro && document.getElementById('filtro-categoria')) {
+                    document.getElementById('filtro-categoria').value = catFiltro;
+                }
+
+                var filtroCat = document.getElementById('filtro-categoria').value;
+
+                var filtrados = produtos.filter(function(p) {
+                    if (p.ativo === false) return false;
+                    if (filtroCat && p.categoria !== filtroCat) return false;
+                    return true;
+                });
+
+                if (!filtrados || filtrados.length === 0) {
+                    container.innerHTML = '<p class="text-center" style="grid-column:1/-1;">Nenhum produto encontrado.</p>';
+                    return;
+                }
+
+                document.getElementById('titulo-categoria').textContent =
+                    filtroCat ? filtroCat.charAt(0).toUpperCase() + filtroCat.slice(1) : 'Todos os Produtos';
+
+                container.innerHTML = filtrados.map(function(p) {
+                    var img = p.imagem || 'https://picsum.photos/seed/' + p.id + '/400/400';
+                    return '<div class="produto-card">' +
+                        '<img class="produto-img" src="' + img + '" alt="' + p.nome + '" loading="lazy">' +
+                        '<div class="produto-body">' +
+                        '<span class="categoria-tag">' + (p.categoria || 'Geral') + '</span>' +
+                        '<h3>' + p.nome + '</h3>' +
+                        '<div class="preco">R$ ' + parseFloat(p.preco || 0).toFixed(2).replace('.', ',') + '</div>' +
+                        '<p class="descricao">' + (p.descricao || '') + '</p>' +
+                        '<p class="estoque">' + (p.estoque > 0 ? 'Estoque: ' + p.estoque + ' un.' : 'Fora de estoque') + '</p>' +
+                        '<button class="btn btn-sm" onclick="adicionarAoCarrinho(' + JSON.stringify(p).replace(/"/g, "'") + ')">🛒 Comprar</button>' +
+                        '</div></div>';
+                }).join('');
+
+                if (prodFiltro) {
+                    var prod = produtos.find(function(p) { return p.id === prodFiltro; });
+                    if (prod) {
+                        adicionarAoCarrinho(prod);
+                    }
+                }
+            } catch (e) {
+                console.error('Erro ao carregar produtos:', e);
+                document.getElementById('produtos-container').innerHTML = '<p class="text-center">Erro ao carregar produtos.</p>';
+            }
+        }
+
+        function filtrarCategoria() {
+            carregarProdutos();
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            carregarProdutos();
+            atualizarBadgeCarrinho();
+        });
+    </script>
+</body>
+</html>

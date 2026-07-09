@@ -1,20 +1,58 @@
 const { Client, LocalAuth, List, Buttons, Button, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
-const fs = require('fs');
 
-const produtos = require('./data/produtos.json');
+const API_BASE = process.env.API_URL || 'http://localhost:3000';
+const API_TOKEN = process.env.API_TOKEN || 'ecommerce-api-token';
+const API_WRITE_KEY = process.env.API_WRITE_KEY || API_TOKEN;
+
 const categorias = ['eletronicos', 'moda', 'casa'];
 const nomesCategoria = { eletronicos: '📱 Eletrônicos', moda: '👕 Moda', casa: '🏠 Casa' };
 
-let carrinhos = {};
-let ultimaCat = {}; // rastreia ultima categoria vista pelo usuario
-try { carrinhos = require('./data/carrinhos.json'); } catch {}
+let produtosCache = null;
+let carrinhosCache = {};
+let ultimaCat = {};
 
-function salvar() {
-  fs.writeFileSync('./data/carrinhos.json', JSON.stringify(carrinhos, null, 2));
+async function api(method, path, body) {
+  const url = API_BASE + path;
+  const opts = {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + API_TOKEN,
+    },
+  };
+  if (body) {
+    opts.body = JSON.stringify(body);
+    opts.headers['X-Write-Key'] = API_WRITE_KEY;
+  }
+  const res = await fetch(url, opts);
+  return res.json();
 }
 
-function fmt(v) { return `R$ ${v.toFixed(2).replace('.', ',')}`; }
+async function getProdutos() {
+  if (produtosCache) return produtosCache;
+  try {
+    const result = await api('GET', '/data/produtos');
+    const rows = Array.isArray(result) ? result : (result.data || []);
+    const agrupados = {};
+    for (const p of rows) {
+      const cat = p.categoria || 'geral';
+      if (!agrupados[cat]) agrupados[cat] = [];
+      agrupados[cat].push(p);
+    }
+    produtosCache = agrupados;
+    return agrupados;
+  } catch (e) {
+    console.error('Erro ao buscar produtos:', e.message);
+    return {};
+  }
+}
+
+function invalidarCache() {
+  produtosCache = null;
+}
+
+function fmt(v) { return 'R$ ' + v.toFixed(2).replace('.', ','); }
 
 function menuCategorias() {
   return new List(
@@ -43,20 +81,36 @@ function menuCategorias() {
 
 function botoesProduto(prod) {
   return new Buttons(
-    `*${prod.nome}*\n${prod.descricao}\n\n*Preço:* ${fmt(prod.preco)}\n*Estoque:* ${prod.estoque} un.`,
+    `*${prod.nome}*\n${prod.descricao || ''}\n\n*Preço:* ${fmt(parseFloat(prod.preco))}\n*Estoque:* ${prod.estoque || 0} un.`,
     [new Button('comprar_' + prod.id, '🛒 Comprar'), new Button('voltar', '⬅️ Voltar')],
     '🛍️ Produto',
     'O que deseja?'
   );
 }
 
-function msgCarrinho(num) {
-  const c = carrinhos[num] || [];
+function listaProdutos(cat, prods) {
+  return new List(
+    `*${nomesCategoria[cat]}*\n\nEscolha um produto:`,
+    '📱 Ver produtos',
+    [{
+      title: nomesCategoria[cat],
+      rows: prods.map(p => ({
+        id: `prod_${cat}_${p.id}`,
+        title: p.nome,
+        description: `${fmt(parseFloat(p.preco))} - Estoque: ${p.estoque || 0}`,
+      })),
+    }],
+    'Selecione:'
+  );
+}
+
+async function msgCarrinho(num) {
+  const c = carrinhosCache[num] || [];
   if (!c.length) return '🛒 *Carrinho vazio!*\nUse o menu para adicionar produtos.';
   let total = 0;
   const linhas = c.map((i, idx) => {
-    total += i.preco * i.qtd;
-    return `${idx + 1}. ${i.nome} x${i.qtd} = ${fmt(i.preco * i.qtd)}`;
+    total += parseFloat(i.preco) * i.qtd;
+    return `${idx + 1}. ${i.nome} x${i.qtd} = ${fmt(parseFloat(i.preco) * i.qtd)}`;
   }).join('\n');
   return `🛒 *Carrinho*\n\n${linhas}\n\n*Total:* ${fmt(total)}\n\nDigite *finalizar* ou *limpar*.`;
 }
@@ -70,30 +124,6 @@ function textoAjuda() {
     '4. Toque em "Comprar"\n' +
     '5. Finalize quando quiser\n\n' +
     'Comandos: *menu* *carrinho* *finalizar* *limpar*'
-  );
-}
-
-function textoCategoria(cat) {
-  const prods = produtos[cat];
-  let t = `*${nomesCategoria[cat]}*\n\n`;
-  prods.forEach((p, i) => { t += `${i + 1}. *${p.nome}* - ${fmt(p.preco)}\n   ${p.descricao}\n\n`; });
-  t += 'Digite o *número* do produto para ver detalhes.';
-  return t;
-}
-
-function listaProdutos(cat) {
-  return new List(
-    textoCategoria(cat),
-    '📱 Ver produtos',
-    [{
-      title: nomesCategoria[cat],
-      rows: produtos[cat].map(p => ({
-        id: `prod_${cat}_${p.id}`,
-        title: p.nome,
-        description: `${fmt(p.preco)} - Estoque: ${p.estoque}`,
-      })),
-    }],
-    'Selecione:'
   );
 }
 
@@ -111,7 +141,7 @@ client.on('ready', () => console.log('✅ Chatbot de e-commerce online!'));
 
 client.on('message', async msg => {
   const num = msg.from;
-  if (!carrinhos[num]) carrinhos[num] = [];
+  if (!carrinhosCache[num]) carrinhosCache[num] = [];
 
   let texto = msg.body;
   let tipo = 'texto';
@@ -129,57 +159,79 @@ client.on('message', async msg => {
   const t = texto.trim();
 
   if (t === 'menu' || t === 'inicio' || t === 'oi' || t === 'ola') {
+    invalidarCache();
     return client.sendMessage(num, menuCategorias());
   }
 
   if (t === 'ver_carrinho' || t === 'carrinho') {
-    return client.sendMessage(num, msgCarrinho(num));
+    return client.sendMessage(num, await msgCarrinho(num));
   }
 
   if (t === 'ajuda') { return client.sendMessage(num, textoAjuda()); }
 
   if (t === 'finalizar') {
-    const c = carrinhos[num];
+    const c = carrinhosCache[num];
     if (!c || !c.length) return client.sendMessage(num, 'Carrinho vazio!');
-    const linhas = c.map(i => `${i.nome} x${i.qtd} = ${fmt(i.preco * i.qtd)}`).join('\n');
-    const total = c.reduce((s, i) => s + i.preco * i.qtd, 0);
-    delete carrinhos[num]; delete ultimaCat[num]; salvar();
+    const linhas = c.map(i => `${i.nome} x${i.qtd} = ${fmt(parseFloat(i.preco) * i.qtd)}`).join('\n');
+    const total = c.reduce((s, i) => s + parseFloat(i.preco) * i.qtd, 0);
+
+    try {
+      await api('POST', '/api/create', {
+        table: 'pedidos',
+        data: {
+          cliente_id: num,
+          cliente_nome: 'Cliente WhatsApp',
+          cliente_telefone: num.replace('@c.us', ''),
+          itens: JSON.stringify(c),
+          total,
+          status: 'pendente',
+          forma_pagamento: 'whatsapp',
+        },
+      });
+    } catch (e) {
+      console.error('Erro ao salvar pedido:', e.message);
+    }
+
+    delete carrinhosCache[num];
+    delete ultimaCat[num];
     return client.sendMessage(num, `✅ *Pedido Confirmado!*\n\n${linhas}\n\n*Total:* ${fmt(total)}\n\nUm atendente entrará em contato para pagamento e entrega. 🚚`);
   }
 
-  if (t === 'limpar') { delete carrinhos[num]; delete ultimaCat[num]; salvar(); return client.sendMessage(num, '🗑️ Carrinho limpo!'); }
+  if (t === 'limpar') { delete carrinhosCache[num]; delete ultimaCat[num]; return client.sendMessage(num, '🗑️ Carrinho limpo!'); }
 
   if (t === 'voltar') { return client.sendMessage(num, menuCategorias()); }
 
   if (t.startsWith('cat_')) {
     const cat = t.slice(4);
-    if (!produtos[cat]) return;
+    const produtos = await getProdutos();
+    if (!produtos[cat] || !produtos[cat].length) return;
     ultimaCat[num] = cat;
-    return client.sendMessage(num, listaProdutos(cat));
+    return client.sendMessage(num, listaProdutos(cat, produtos[cat]));
   }
 
   if (t.startsWith('prod_')) {
     const partes = t.split('_');
     const cat = partes[1];
     const prodId = partes.slice(2).join('_');
+    const produtos = await getProdutos();
     const prod = produtos[cat]?.find(p => p.id === prodId);
     if (!prod) return;
     try {
-      const media = await MessageMedia.fromUrl(prod.imagem, { unsafeMime: true });
-      await client.sendMessage(num, media, { caption: `*${prod.nome}*\n${fmt(prod.preco)}` });
+      const media = await MessageMedia.fromUrl(prod.imagem || `https://picsum.photos/seed/${prod.id}/400/400`, { unsafeMime: true });
+      await client.sendMessage(num, media, { caption: `*${prod.nome}*\n${fmt(parseFloat(prod.preco))}` });
     } catch {}
     return client.sendMessage(num, botoesProduto(prod));
   }
 
   if (t.startsWith('comprar_')) {
     const prodId = t.slice(8);
+    const produtos = await getProdutos();
     for (const cat of categorias) {
       const prod = produtos[cat]?.find(p => p.id === prodId);
       if (prod) {
-        const existente = carrinhos[num].find(i => i.id === prodId);
+        const existente = carrinhosCache[num].find(i => i.id === prodId);
         if (existente) { existente.qtd++; }
-        else { carrinhos[num].push({ id: prodId, nome: prod.nome, preco: prod.preco, qtd: 1 }); }
-        salvar();
+        else { carrinhosCache[num].push({ id: prodId, nome: prod.nome, preco: prod.preco, qtd: 1 }); }
         return client.sendMessage(num,
           `✅ *${prod.nome}* adicionado ao carrinho!\n\nDigite *carrinho* para ver ou *menu* para continuar.`);
       }
@@ -187,30 +239,24 @@ client.on('message', async msg => {
     return client.sendMessage(num, 'Produto não encontrado.');
   }
 
-  // Selecao por numero - usa ultima categoria visitada
   const idx = parseInt(t, 10);
-  if (!isNaN(idx) && idx >= 1 && ultimaCat[num]) {
-    const prods = produtos[ultimaCat[num]];
-    if (idx <= prods.length) {
-      const prod = prods[idx - 1];
+  if (!isNaN(idx) && idx >= 1) {
+    const produtos = await getProdutos();
+    if (ultimaCat[num] && produtos[ultimaCat[num]] && idx <= produtos[ultimaCat[num]].length) {
+      const prod = produtos[ultimaCat[num]][idx - 1];
       try {
-        const media = await MessageMedia.fromUrl(prod.imagem, { unsafeMime: true });
-        await client.sendMessage(num, media, { caption: `*${prod.nome}*\n${fmt(prod.preco)}` });
+        const media = await MessageMedia.fromUrl(prod.imagem || `https://picsum.photos/seed/${prod.id}/400/400`, { unsafeMime: true });
+        await client.sendMessage(num, media, { caption: `*${prod.nome}*\n${fmt(parseFloat(prod.preco))}` });
       } catch {}
       return client.sendMessage(num, botoesProduto(prod));
     }
-    return client.sendMessage(num, 'Número inválido. Digite *menu*.');
-  }
-
-  // fallback se nao tem ultimaCat mas digitou numero
-  if (!isNaN(idx) && idx >= 1) {
     for (const cat of categorias) {
-      const prods = produtos[cat];
-      if (idx <= prods.length) {
-        const prod = prods[idx - 1];
+      if (produtos[cat] && idx <= produtos[cat].length) {
+        const prod = produtos[cat][idx - 1];
+        ultimaCat[num] = cat;
         try {
-          const media = await MessageMedia.fromUrl(prod.imagem, { unsafeMime: true });
-          await client.sendMessage(num, media, { caption: `*${prod.nome}*\n${fmt(prod.preco)}` });
+          const media = await MessageMedia.fromUrl(prod.imagem || `https://picsum.photos/seed/${prod.id}/400/400`, { unsafeMime: true });
+          await client.sendMessage(num, media, { caption: `*${prod.nome}*\n${fmt(parseFloat(prod.preco))}` });
         } catch {}
         return client.sendMessage(num, botoesProduto(prod));
       }
