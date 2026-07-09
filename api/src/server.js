@@ -101,6 +101,17 @@ fastify.get('/api/config', async () => ({
   project: 'ecommerce',
 }));
 
+let botStatus = { qr: null, connected: false };
+
+fastify.get('/api/qrcode', async () => botStatus);
+
+fastify.post('/api/qrcode', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  const { qr, connected } = req.body || {};
+  if (qr !== undefined) botStatus.qr = qr;
+  if (connected !== undefined) botStatus.connected = connected;
+  return { success: true };
+});
+
 fastify.get('/data/:table', async (req, res) => {
   const { table } = req.params;
   if (!validateTableName(table)) {
@@ -263,28 +274,112 @@ fastify.post('/api/table/create', { preHandler: authMiddleware }, async (req, re
   }
 });
 
-fastify.get('/api/vtex-proxy', async (req, res) => {
-  const { domain, ft, _from, _to } = req.query;
-  if (!domain || !ft) {
-    return res.code(400).send({ error: 'domain and ft required' });
-  }
-  const from = _from || '0';
-  const to = _to || '49';
-  const url = 'https://' + domain + '/api/catalog_system/pub/products/search?ft=' + encodeURIComponent(ft) + '&_from=' + from + '&_to=' + to;
+fastify.get('/api/produtos', async (req, res) => {
+  const { categoria, search, limit = 50, offset = 0 } = req.query;
   try {
-    const apiRes = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (!apiRes.ok) {
-      return res.code(apiRes.status).send({ error: 'VTEX API error: ' + apiRes.status });
+    let sql = 'SELECT * FROM "produtos" WHERE ativo = true';
+    const params = [];
+    if (categoria) {
+      params.push(categoria);
+      sql += ' AND categoria = $' + params.length;
     }
-    const data = await apiRes.json();
-    return res.code(200).send(data);
-  } catch (e) {
-    return res.code(502).send({ error: e.message });
+    if (search) {
+      params.push('%' + search + '%');
+      sql += ' AND (nome ILIKE $' + params.length + ' OR descricao ILIKE $' + params.length + ')';
+    }
+    sql += ' ORDER BY created_at DESC LIMIT ' + parseInt(limit) + ' OFFSET ' + parseInt(offset);
+    const result = await query(sql, params);
+    return { success: true, data: result.rows, total: result.rows.length };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.get('/api/produtos/:id', async (req, res) => {
+  try {
+    const result = await query('SELECT * FROM "produtos" WHERE id = $1', [req.params.id]);
+    if (!result.rows.length) return res.code(404).send({ error: 'Produto nao encontrado' });
+    return { success: true, data: result.rows[0] };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.post('/api/produtos', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  const { id, nome, descricao, preco, categoria, imagem, estoque } = req.body || {};
+  if (!nome || preco === undefined || !categoria) {
+    return res.code(400).send({ error: 'nome, preco e categoria sao obrigatorios' });
+  }
+  const productId = id || crypto.randomUUID().split('-')[0];
+  try {
+    const result = await query(
+      'INSERT INTO "produtos" (id, nome, descricao, preco, categoria, imagem, estoque) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO UPDATE SET nome = $2, descricao = $3, preco = $4, categoria = $5, imagem = $6, estoque = $7 RETURNING *',
+      [productId, nome, descricao || '', parseFloat(preco), categoria, imagem || '', parseInt(estoque) || 0]
+    );
+    return { success: true, data: result.rows[0] };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.put('/api/produtos/:id', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  const { nome, descricao, preco, categoria, imagem, estoque, ativo } = req.body || {};
+  try {
+    const sets = [];
+    const params = [];
+    if (nome !== undefined) { sets.push('nome = $' + (params.length + 1)); params.push(nome); }
+    if (descricao !== undefined) { sets.push('descricao = $' + (params.length + 1)); params.push(descricao); }
+    if (preco !== undefined) { sets.push('preco = $' + (params.length + 1)); params.push(parseFloat(preco)); }
+    if (categoria !== undefined) { sets.push('categoria = $' + (params.length + 1)); params.push(categoria); }
+    if (imagem !== undefined) { sets.push('imagem = $' + (params.length + 1)); params.push(imagem); }
+    if (estoque !== undefined) { sets.push('estoque = $' + (params.length + 1)); params.push(parseInt(estoque)); }
+    if (ativo !== undefined) { sets.push('ativo = $' + (params.length + 1)); params.push(ativo); }
+    if (!sets.length) return res.code(400).send({ error: 'Nenhum campo para atualizar' });
+    params.push(req.params.id);
+    const result = await query(
+      'UPDATE "produtos" SET ' + sets.join(', ') + ', updated_at = NOW() WHERE id = $' + params.length + ' RETURNING *',
+      params
+    );
+    if (!result.rows.length) return res.code(404).send({ error: 'Produto nao encontrado' });
+    return { success: true, data: result.rows[0] };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.delete('/api/produtos/:id', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  try {
+    const result = await query('DELETE FROM "produtos" WHERE id = $1 RETURNING id', [req.params.id]);
+    if (!result.rows.length) return res.code(404).send({ error: 'Produto nao encontrado' });
+    return { success: true, deleted: true, id: req.params.id };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.post('/api/produtos/seed', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  try {
+    const filePath = path.join(PROJECT_ROOT, 'data', 'produtos.json');
+    if (!fs.existsSync(filePath)) return res.code(404).send({ error: 'Arquivo produtos.json nao encontrado' });
+    const raw = JSON.parse(await fs.promises.readFile(filePath, 'utf-8'));
+    let count = 0;
+    for (const [categoria, items] of Object.entries(raw)) {
+      for (const item of items) {
+        await query(
+          'INSERT INTO "produtos" (id, nome, descricao, preco, categoria, imagem, estoque) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING',
+          [item.id, item.nome, item.descricao || '', parseFloat(item.preco), categoria, item.imagem || '', parseInt(item.estoque) || 0]
+        );
+        count++;
+      }
+    }
+    return { success: true, message: count + ' produtos importados' };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
   }
 });
 
 const TABLES = [
-  { name: 'produtos', columns: 'id UUID PRIMARY KEY, nome TEXT, descricao TEXT, preco DECIMAL(10,2), categoria TEXT, imagem TEXT, estoque INTEGER DEFAULT 0, ativo BOOLEAN DEFAULT true, created_at TIMESTAMP DEFAULT NOW()' },
+  { name: 'produtos', columns: 'id TEXT PRIMARY KEY, nome TEXT, descricao TEXT, preco DECIMAL(10,2), categoria TEXT, imagem TEXT, estoque INTEGER DEFAULT 0, ativo BOOLEAN DEFAULT true, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
   { name: 'carrinhos', columns: 'id UUID PRIMARY KEY, cliente_id TEXT, cliente_nome TEXT, itens JSONB DEFAULT \'[]\'::jsonb, total DECIMAL(10,2) DEFAULT 0, status TEXT DEFAULT \'ativo\', created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
   { name: 'pedidos', columns: 'id UUID PRIMARY KEY, cliente_id TEXT, cliente_nome TEXT, cliente_telefone TEXT, itens JSONB DEFAULT \'[]\'::jsonb, total DECIMAL(10,2), status TEXT DEFAULT \'pendente\', forma_pagamento TEXT, observacoes TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
   { name: 'contatos', columns: 'id UUID PRIMARY KEY, nome TEXT, email TEXT, telefone TEXT, mensagem TEXT, lido BOOLEAN DEFAULT false, created_at TIMESTAMP DEFAULT NOW()' },

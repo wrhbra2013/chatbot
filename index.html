@@ -3,9 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Busca de Produtos - Encontre os melhores preços</title>
+    <title>Chatbot E-commerce - Produtos via WhatsApp</title>
     <link rel="icon" type="image/png" href="static/icon/favicon.ico">
     <link rel="stylesheet" href="static/css/style.css?v=1.0.0">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body>
     <div id="banner-comercial"></div>
@@ -14,25 +15,52 @@
     <main class="main-content">
         <div class="container">
             <section class="intro-section text-center">
-                <h2>Busque Produtos nas Melhores Lojas</h2>
-                <p>Compare preços de Americanas, Casas Bahia e muitas outras lojas. Encontre o melhor preço e peça pelo WhatsApp!</p>
-                <a href="paginas/produtos.html" class="btn" style="font-size:1.1rem;">🔍 Buscar Produtos</a>
+                <h2>Catálogo de Produtos</h2>
+                <p>Veja nossos produtos e peça diretamente pelo WhatsApp! Adicione itens ao carrinho pelo site ou pelo chat.</p>
+                <a href="paginas/produtos.html" class="btn" style="font-size:1.1rem;">🔍 Ver Produtos</a>
             </section>
 
             <section class="section">
-                <h3 class="section-title">Lojas Disponíveis</h3>
-                <div id="stores-container" class="dashboard-grid"></div>
+                <div id="whatsapp-status" class="card text-center" style="max-width:400px;margin:0 auto 2rem;">
+                    <div id="qr-status-loading">
+                        <p style="color:#888;">Iniciando conexão com WhatsApp...</p>
+                    </div>
+                    <div id="qr-status-connected" style="display:none;">
+                        <div style="font-size:3rem;margin-bottom:0.5rem;">✅</div>
+                        <h3 style="color:#28a745;">WhatsApp Conectado</h3>
+                        <p style="color:#666;">O bot está pronto para receber pedidos.</p>
+                    </div>
+                    <div id="qr-status-scan" style="display:none;">
+                        <h3>📱 Acesse pelo WhatsApp</h3>
+                        <p style="color:#555;margin-bottom:1rem;">Escaneie o QR code abaixo com o WhatsApp do seu celular:</p>
+                        <div id="qrcode-container" style="display:inline-block;padding:1rem;background:#fff;border-radius:12px;"></div>
+                        <p style="color:#888;font-size:0.85rem;margin-top:1rem;">Abra o WhatsApp > Menu > WhatsApp Web</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="section">
+                <h3 class="section-title">Categorias</h3>
+                <div id="categories-container" class="dashboard-grid"></div>
+            </section>
+
+            <section class="section">
+                <h3 class="section-title">Produtos em Destaque</h3>
+                <div id="featured-products" class="produtos-grid"></div>
             </section>
 
             <section class="section text-center">
                 <div class="card" style="max-width:500px;margin:0 auto;">
-                    <h3>🛒 Como Funciona</h3>
+                    <h3>📱 Como Funciona</h3>
                     <ol style="text-align:left;">
-                        <li>Escolha uma loja e busque por um produto</li>
-                        <li>Adicione os produtos ao carrinho</li>
-                        <li>Finalize o pedido informando seus dados</li>
-                        <li>Um atendente entrará em contato pelo WhatsApp</li>
+                        <li>Navegue pelos produtos no site ou pelo WhatsApp</li>
+                        <li>Adicione ao carrinho com um clique</li>
+                        <li>Envie *finalizar* no WhatsApp para confirmar o pedido</li>
+                        <li>Um atendente entrará em contato para pagamento e entrega</li>
                     </ol>
+                    <p style="margin-top:1rem;font-size:0.9rem;color:#666;">
+                        Comandos do WhatsApp: <em>produtos</em>, <em>comprar &lt;id&gt;</em>, <em>carrinho</em>, <em>finalizar</em>
+                    </p>
                     <a href="paginas/carrinho.html" class="btn mt-1">Ver Carrinho</a>
                 </div>
             </section>
@@ -43,47 +71,109 @@
 
     <script src="static/js/components.js?v=1.0.0"></script>
     <script>
-        var BUILTIN_STORES = [
-            ["www.americanas.com.br", "Americanas"],
-            ["www.animale.com.br", "Animale"],
-            ["www.aramis.com.br", "Aramis"],
-            ["www.bemol.com.br", "Bemol"],
-            ["www.brastemp.com.br", "Brastemp"],
-            ["www.cea.com.br", "C&A"],
-            ["www.cobasi.com.br", "Cobasi"],
-            ["www.consul.com.br", "Consul"],
-            ["www.drogariaspacheco.com.br", "Drogaria Pacheco"],
-            ["www.drogariasaopaulo.com.br", "Drogaria São Paulo"],
-            ["www.epocacosmeticos.com.br", "Época Cosméticos"],
-            ["www.extrafarma.com.br", "Extrafarma"],
-            ["www.farmrio.com.br", "Farm Rio"],
-            ["www.hinode.com.br", "Hinode"],
-            ["www.kopenhagen.com.br", "Kopenhagen"],
-            ["www.lojasrede.com.br", "Lojas Rede"],
-            ["www.malwee.com.br", "Malwee"],
-            ["www.oceane.com.br", "Oceane"],
-            ["www.olympikus.com.br", "Olympikus"],
-            ["www.paguemenos.com.br", "Pague Menos"],
-            ["www.pandorajoias.com.br", "Pandora Joias"],
-            ["www.rihappy.com.br", "Ri Happy"],
-            ["www.santalolla.com.br", "Santa Lolla"],
-            ["www.telhanorte.com.br", "Telhanorte"],
-            ["www.tng.com.br", "TNG"],
-            ["www.tokstok.com.br", "Tok&Stok"],
-            ["www.urbanarts.com.br", "Urban Arts"],
-            ["www.vivara.com.br", "Vivara"],
-        ];
-
-        var container = document.getElementById('stores-container');
-        var html = '';
-        for (var i = 0; i < BUILTIN_STORES.length; i++) {
-            var name = BUILTIN_STORES[i][1];
-            html += '<div class="dashboard-card text-center">' +
-                '<h3>' + name + '</h3>' +
-                '<a href="paginas/produtos.html?loja=' + encodeURIComponent(BUILTIN_STORES[i][0]) + '" class="card-link">Buscar nesta loja &rarr;</a>' +
-                '</div>';
+        function fmtBRL(v) {
+            return 'R$ ' + v.toFixed(2).replace('.', ',');
         }
-        container.innerHTML = html;
+
+        function escHtml(s) {
+            var d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        var qrCodeInstance = null;
+
+        function atualizarQR() {
+            fetch('/api/qrcode')
+                .then(function(r) { return r.json(); })
+                .then(function(status) {
+                    var loading = document.getElementById('qr-status-loading');
+                    var connected = document.getElementById('qr-status-connected');
+                    var scan = document.getElementById('qr-status-scan');
+
+                    if (status.connected) {
+                        loading.style.display = 'none';
+                        scan.style.display = 'none';
+                        connected.style.display = 'block';
+                        return;
+                    }
+
+                    if (status.qr) {
+                        loading.style.display = 'none';
+                        connected.style.display = 'none';
+                        scan.style.display = 'block';
+
+                        var container = document.getElementById('qrcode-container');
+                        container.innerHTML = '';
+                        qrCodeInstance = new QRCode(container, {
+                            text: status.qr,
+                            width: 256,
+                            height: 256,
+                            colorDark: '#2a254b',
+                            colorLight: '#ffffff',
+                            correctLevel: QRCode.CorrectLevel.H,
+                        });
+                    } else {
+                        loading.style.display = 'block';
+                        scan.style.display = 'none';
+                        connected.style.display = 'none';
+                    }
+                })
+                .catch(function() {});
+        }
+
+        async function carregarCategorias() {
+            try {
+                var resp = await fetch('/data/produtos');
+                var produtos = await resp.json();
+                var cats = {};
+                produtos.forEach(function(p) { if (p.categoria) cats[p.categoria] = true; });
+
+                var container = document.getElementById('categories-container');
+                var html = '';
+                Object.keys(cats).sort().forEach(function(c) {
+                    html += '<div class="dashboard-card text-center">' +
+                        '<h3>' + c.charAt(0).toUpperCase() + c.slice(1) + '</h3>' +
+                        '<a href="paginas/produtos.html?categoria=' + encodeURIComponent(c) + '" class="card-link">Ver produtos &rarr;</a>' +
+                        '</div>';
+                });
+                container.innerHTML = html || '<p class="text-center" style="grid-column:1/-1;">Nenhuma categoria disponivel.</p>';
+            } catch (e) {
+                console.error('Erro ao carregar categorias:', e);
+            }
+        }
+
+        async function carregarDestaques() {
+            try {
+                var resp = await fetch('/api/produtos?limit=6');
+                var result = await resp.json();
+                var produtos = result.data || [];
+                var container = document.getElementById('featured-products');
+
+                if (!produtos.length) {
+                    container.innerHTML = '<p class="text-center" style="grid-column:1/-1;padding:40px;color:#888;">Nenhum produto cadastrado.</p>';
+                    return;
+                }
+
+                container.innerHTML = produtos.map(function(p) {
+                    var img = p.imagem || 'https://via.placeholder.com/280x180?text=Sem+Imagem';
+                    return '<div class="produto-card">' +
+                        '<span class="categoria-tag">' + escHtml(p.categoria) + '</span>' +
+                        '<img class="produto-img" src="' + img + '" alt="' + escHtml(p.nome) + '" loading="lazy" onerror="this.src=\'https://via.placeholder.com/280x180?text=Sem+Imagem\'">' +
+                        '<div class="produto-body">' +
+                        '<h3>' + escHtml(p.nome) + '</h3>' +
+                        '<div class="preco">' + fmtBRL(parseFloat(p.preco)) + '</div>' +
+                        '</div></div>';
+                }).join('\n');
+            } catch (e) {
+                console.error('Erro ao carregar destaques:', e);
+            }
+        }
+
+        atualizarQR();
+        setInterval(atualizarQR, 3000);
+        carregarCategorias();
+        carregarDestaques();
     </script>
 </body>
 </html>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Buscar Produtos - Busca de Produtos</title>
+    <title>Produtos - Chatbot E-commerce</title>
     <link rel="icon" type="image/png" href="../static/icon/favicon.ico">
     <link rel="stylesheet" href="../static/css/style.css?v=1.0.0">
 </head>
@@ -15,9 +15,10 @@
         <div class="container">
             <div class="card mb-2">
                 <form id="searchForm" class="flex gap-1" style="flex-wrap:wrap;">
-                    <select id="store-select" class="form-group" style="flex:1;min-width:180px;margin:0;"></select>
-                    <input type="text" id="search-input" class="form-group" placeholder="Buscar produto..." style="flex:2;min-width:200px;margin:0;" required>
-                    <input type="number" id="limit-input" class="form-group" value="12" min="1" max="50" style="width:80px;margin:0;">
+                    <select id="category-select" class="form-group" style="flex:1;min-width:180px;margin:0;">
+                        <option value="">Todas as categorias</option>
+                    </select>
+                    <input type="text" id="search-input" class="form-group" placeholder="Buscar produto..." style="flex:2;min-width:200px;margin:0;">
                     <button type="submit" class="btn" id="btnBuscar" style="white-space:nowrap;">🔍 Buscar</button>
                 </form>
             </div>
@@ -31,87 +32,21 @@
 
     <script src="../static/js/components.js?v=1.0.0"></script>
     <script>
-        var BUILTIN_STORES = [
-            ["www.americanas.com.br", "Americanas"],
-            ["www.animale.com.br", "Animale"],
-            ["www.aramis.com.br", "Aramis"],
-            ["www.bemol.com.br", "Bemol"],
-            ["www.brastemp.com.br", "Brastemp"],
-            ["www.cea.com.br", "C&A"],
-            ["www.cobasi.com.br", "Cobasi"],
-            ["www.consul.com.br", "Consul"],
-            ["www.drogariaspacheco.com.br", "Drogaria Pacheco"],
-            ["www.drogariasaopaulo.com.br", "Drogaria São Paulo"],
-            ["www.epocacosmeticos.com.br", "Época Cosméticos"],
-            ["www.extrafarma.com.br", "Extrafarma"],
-            ["www.farmrio.com.br", "Farm Rio"],
-            ["www.hinode.com.br", "Hinode"],
-            ["www.kopenhagen.com.br", "Kopenhagen"],
-            ["www.lojasrede.com.br", "Lojas Rede"],
-            ["www.malwee.com.br", "Malwee"],
-            ["www.oceane.com.br", "Oceane"],
-            ["www.olympikus.com.br", "Olympikus"],
-            ["www.paguemenos.com.br", "Pague Menos"],
-            ["www.pandorajoias.com.br", "Pandora Joias"],
-            ["www.rihappy.com.br", "Ri Happy"],
-            ["www.santalolla.com.br", "Santa Lolla"],
-            ["www.telhanorte.com.br", "Telhanorte"],
-            ["www.tng.com.br", "TNG"],
-            ["www.tokstok.com.br", "Tok&Stok"],
-            ["www.urbanarts.com.br", "Urban Arts"],
-            ["www.vivara.com.br", "Vivara"],
-        ];
-
         var statusDiv = document.getElementById('status');
         var resultsDiv = document.getElementById('results');
-        var storeSelect = document.getElementById('store-select');
+        var categorySelect = document.getElementById('category-select');
         var searchInput = document.getElementById('search-input');
-        var limitInput = document.getElementById('limit-input');
         var searchForm = document.getElementById('searchForm');
         var btnBuscar = document.getElementById('btnBuscar');
 
-        var STORAGE_PREFIX = 'vtex_discovered_';
-
-        function getDiscoveredKey() {
-            return 'vtex_discovered_domains';
+        function fmtBRL(v) {
+            return 'R$ ' + v.toFixed(2).replace('.', ',');
         }
 
-        function loadDiscovered() {
-            try { return JSON.parse(localStorage.getItem(getDiscoveredKey())) || []; }
-            catch { return []; }
-        }
-
-        function saveDiscovered(list) {
-            localStorage.setItem(getDiscoveredKey(), JSON.stringify(list));
-        }
-
-        function addDiscoveredDomain(domain) {
-            var list = loadDiscovered();
-            if (!list.includes(domain) && !BUILTIN_STORES.some(function(s) { return s[0] === domain; })) {
-                list.push(domain);
-                saveDiscovered(list);
-                populateSelect(domain);
-            }
-        }
-
-        function populateSelect(selectValue) {
-            var discovered = loadDiscovered();
-            storeSelect.innerHTML = "";
-            for (var i = 0; i < BUILTIN_STORES.length; i++) {
-                var opt = document.createElement("option");
-                opt.value = BUILTIN_STORES[i][0];
-                opt.textContent = BUILTIN_STORES[i][1];
-                storeSelect.appendChild(opt);
-            }
-            for (var j = 0; j < discovered.length; j++) {
-                if (!BUILTIN_STORES.some(function(s) { return s[0] === discovered[j]; })) {
-                    var opt2 = document.createElement("option");
-                    opt2.value = discovered[j];
-                    opt2.textContent = discovered[j].replace(/^www\./, "").replace(/\.com\.br$/, "");
-                    storeSelect.appendChild(opt2);
-                }
-            }
-            if (selectValue) storeSelect.value = selectValue;
+        function escHtml(s) {
+            var d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
         }
 
         function setStatus(msg, type) {
@@ -124,79 +59,28 @@
             statusDiv.style.display = 'none';
         }
 
-        function fmtBRL(v) {
-            return 'R$ ' + v.toFixed(2).replace('.', ',');
-        }
-
-        function escHtml(s) {
-            var d = document.createElement('div');
-            d.textContent = s;
-            return d.innerHTML;
-        }
-
-        function getLojaNome(domain) {
-            for (var i = 0; i < BUILTIN_STORES.length; i++) {
-                if (BUILTIN_STORES[i][0] === domain) return BUILTIN_STORES[i][1];
+        async function carregarCategorias() {
+            try {
+                var resp = await fetch('/data/produtos');
+                var produtos = await resp.json();
+                var cats = {};
+                produtos.forEach(function(p) { if (p.categoria) cats[p.categoria] = true; });
+                Object.keys(cats).sort().forEach(function(c) {
+                    var opt = document.createElement('option');
+                    opt.value = c;
+                    opt.textContent = c.charAt(0).toUpperCase() + c.slice(1);
+                    categorySelect.appendChild(opt);
+                });
+            } catch (e) {
+                console.error('Erro ao carregar categorias:', e);
             }
-            return domain.replace(/^www\./, "").replace(/\.com\.br$/, "");
-        }
-
-        var IS_LOCAL = location.hostname === "localhost" || location.hostname === "127.0.0.1";
-
-        async function fetchProducts(domain, query, limit) {
-            var params = new URLSearchParams({ ft: query, _from: "0", _to: String(limit - 1) });
-            var url, headers;
-            if (IS_LOCAL) {
-                url = '/api/vtex-proxy?domain=' + encodeURIComponent(domain) + '&' + params.toString();
-                headers = {};
-            } else {
-                var apiUrl = 'https://' + domain + '/api/catalog_system/pub/products/search?' + params;
-                url = 'https://blkproxy.vercel.app/api/proxy?url=' + encodeURIComponent(apiUrl);
-                headers = {};
-            }
-            var resp = await fetch(url, { headers: headers, signal: AbortSignal.timeout(20000) });
-            if (!resp.ok) {
-                var body = await resp.json().catch(function() { return {}; });
-                throw new Error(body.error || 'HTTP ' + resp.status);
-            }
-            return resp.json();
-        }
-
-        function extractProduct(p, domain) {
-            var item = (p.items || [])[0] || {};
-            var sellers = item.sellers || [];
-            var offers = sellers
-                .map(function(s) { return s.commertialOffer; })
-                .filter(function(o) { return o && o.Price > 0; });
-            var best = offers.length ? offers.reduce(function(a, b) { return a.Price < b.Price ? a : b; }) : null;
-            var price = best ? best.Price : null;
-
-            var seller = '';
-            if (best && sellers.length) {
-                var idx = sellers.findIndex(function(s) { return s.commertialOffer === best; });
-                if (idx >= 0) seller = sellers[idx].sellerName || '';
-            }
-
-            var image = (item.images || [])[0]?.imageUrl || '';
-
-            return {
-                productId: p.productId || '',
-                name: p.productName || '',
-                brand: p.brand || '',
-                link: p.link || '',
-                imageUrl: image,
-                seller: seller,
-                price: price,
-                loja: domain,
-                lojaNome: getLojaNome(domain),
-            };
         }
 
         function adicionarAoCarrinho(prod) {
             var carrinho = JSON.parse(localStorage.getItem('carrinho_temp') || '[]');
             var existente = null;
             for (var i = 0; i < carrinho.length; i++) {
-                if (carrinho[i].id === prod.productId && carrinho[i].loja === prod.loja) {
+                if (carrinho[i].id === prod.id) {
                     existente = carrinho[i];
                     break;
                 }
@@ -205,18 +89,16 @@
                 existente.qtd = (existente.qtd || 1) + 1;
             } else {
                 carrinho.push({
-                    id: prod.productId,
-                    nome: prod.name,
-                    preco: prod.price,
+                    id: prod.id,
+                    nome: prod.nome,
+                    preco: parseFloat(prod.preco),
                     qtd: 1,
-                    imagem: prod.imageUrl,
-                    loja: prod.loja,
-                    lojaNome: prod.lojaNome,
-                    link: prod.link,
+                    imagem: prod.imagem || '',
+                    categoria: prod.categoria || '',
                 });
             }
             localStorage.setItem('carrinho_temp', JSON.stringify(carrinho));
-            alert('✅ "' + prod.name + '" adicionado ao carrinho!');
+            alert('✅ "' + prod.nome + '" adicionado ao carrinho!');
         }
 
         function renderProducts(results) {
@@ -226,55 +108,53 @@
             }
 
             resultsDiv.innerHTML = results.map(function(prod) {
-                var img = prod.imageUrl || 'https://via.placeholder.com/280x180?text=Sem+Imagem';
-                var priceHtml = prod.price !== null
-                    ? '<div class="preco">' + fmtBRL(prod.price) + '</div>'
-                    : '<div class="preco" style="color:#999;">Preço indisponível</div>';
+                var img = prod.imagem || 'https://via.placeholder.com/280x180?text=Sem+Imagem';
+                var priceHtml = '<div class="preco">' + fmtBRL(parseFloat(prod.preco)) + '</div>';
+                var estoqueHtml = prod.estoque > 0
+                    ? '<div class="estoque">Estoque: ' + prod.estoque + ' un.</div>'
+                    : '<div class="estoque" style="color:#dc3545;">Indisponivel</div>';
 
                 return '<div class="produto-card">' +
-                    '<span class="categoria-tag" style="background:#4a6cf7;color:#fff;">' + escHtml(prod.lojaNome) + '</span>' +
-                    '<img class="produto-img" src="' + img + '" alt="' + escHtml(prod.name) + '" loading="lazy" onerror="this.src=\'https://via.placeholder.com/280x180?text=Sem+Imagem\'">' +
+                    '<span class="categoria-tag">' + escHtml(prod.categoria) + '</span>' +
+                    '<img class="produto-img" src="' + img + '" alt="' + escHtml(prod.nome) + '" loading="lazy" onerror="this.src=\'https://via.placeholder.com/280x180?text=Sem+Imagem\'">' +
                     '<div class="produto-body">' +
-                    '<h3>' + escHtml(prod.name) + '</h3>' +
-                    '<div style="font-size:0.85rem;color:#666;margin-bottom:0.5rem;">' + escHtml(prod.brand || '') + '</div>' +
+                    '<h3>' + escHtml(prod.nome) + '</h3>' +
+                    '<div class="descricao">' + escHtml(prod.descricao || '') + '</div>' +
                     priceHtml +
-                    '<div style="display:flex;gap:0.5rem;margin-top:0.5rem;">' +
+                    estoqueHtml +
                     '<button class="btn btn-sm" onclick="adicionarAoCarrinho(' + JSON.stringify(prod).replace(/"/g, "'") + ')">🛒 Comprar</button>' +
-                    (prod.link ? '<a class="btn btn-sm btn-outline" href="' + escHtml(prod.link) + '" target="_blank" rel="noopener">🔗 Ver na Loja</a>' : '') +
-                    '</div></div></div>';
+                    '</div></div>';
             }).join('\n');
         }
 
         async function buscar() {
-            var domain = storeSelect.value;
-            var query = searchInput.value.trim();
-            var limit = Math.min(Math.max(parseInt(limitInput.value) || 12, 1), 50);
-
-            if (!domain || !query) {
-                setStatus('Selecione uma loja e digite um termo de busca.', 'erro');
-                return;
-            }
+            var categoria = categorySelect.value;
+            var search = searchInput.value.trim();
 
             btnBuscar.disabled = true;
             hideStatus();
             resultsDiv.innerHTML = '<p style="text-align:center;color:#888;padding:40px;">Buscando produtos...</p>';
 
             try {
-                setStatus('Consultando ' + getLojaNome(domain) + '...', 'info');
-                var raw = await fetchProducts(domain, query, limit);
-                var results = raw.map(function(p) { return extractProduct(p, domain); });
-                setStatus(results.length + ' produto(s) encontrado(s) em ' + getLojaNome(domain) + '.', 'ok');
-                renderProducts(results);
-                addDiscoveredDomain(domain);
-                hideStatus();
-            } catch (err) {
-                if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-                    setStatus('Tempo limite excedido. Verifique o domínio e tente novamente.', 'erro');
-                } else if (err.message && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError'))) {
-                    setStatus('Erro de rede. Verifique sua conexão.', 'erro');
+                var params = new URLSearchParams({ limit: '50' });
+                if (categoria) params.set('categoria', categoria);
+                if (search) params.set('search', search);
+
+                var resp = await fetch('/api/produtos?' + params.toString());
+                var result = await resp.json();
+
+                if (result.success) {
+                    var msg = result.data.length + ' produto(s) encontrado(s).';
+                    if (categoria) msg += ' Categoria: ' + categoria;
+                    setStatus(msg, 'ok');
+                    renderProducts(result.data);
+                    hideStatus();
                 } else {
-                    setStatus('Erro: ' + err.message, 'erro');
+                    setStatus('Erro: ' + (result.error || 'Erro desconhecido'), 'erro');
+                    resultsDiv.innerHTML = '';
                 }
+            } catch (err) {
+                setStatus('Erro ao buscar produtos: ' + err.message, 'erro');
                 resultsDiv.innerHTML = '';
             } finally {
                 btnBuscar.disabled = false;
@@ -286,7 +166,8 @@
             buscar();
         });
 
-        populateSelect();
+        carregarCategorias();
+        buscar();
     </script>
 </body>
 </html>

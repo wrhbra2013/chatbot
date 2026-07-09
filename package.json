@@ -1,7 +1,7 @@
 {
   "name": "buscaprecos",
   "version": "3.0.0",
-  "description": "Buscador de preços VTEX + WhatsApp Bot + API",
+  "description": "Catálogo de produtos + vendas via WhatsApp + API",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",

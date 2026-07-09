@@ -22,7 +22,7 @@ function initComponents() {
     const headerHTML = `<header class="header">
     <div class="header-container">
         <a href="${basePath}index.html" class="header-title">
-            <span class="site-title">Busca de Produtos</span>
+            <span class="site-title">Catálogo WhatsApp</span>
         </a>
         <input type="checkbox" id="menu-toggle" class="menu-checkbox">
         <label for="menu-toggle" class="sandwich-button" aria-label="Abrir menu">
@@ -34,7 +34,7 @@ function initComponents() {
     <nav id="main-navigation" class="main-nav">
         <ul class="menu">
             <li class="nav-item"><a class="nav-link" href="${basePath}index.html">Início</a></li>
-            <li class="nav-item"><a class="nav-link" href="${basePath}paginas/produtos.html">Buscar Produtos</a></li>
+            <li class="nav-item"><a class="nav-link" href="${basePath}paginas/produtos.html">Produtos</a></li>
             <li class="nav-item"><a class="nav-link" href="${basePath}paginas/carrinho.html">Carrinho</a></li>
             <li class="nav-item"><a class="nav-link" href="${basePath}paginas/contato.html">Contato</a></li>
         </ul>
@@ -43,7 +43,7 @@ function initComponents() {
 <div class="mobile-overlay" id="mobile-overlay"></div>`;
 
     const footerHTML = `<footer class="footer">
-    <p>&copy; 2026 Busca de Produtos. Todos os direitos reservados.</p>
+    <p>&copy; 2026 Catálogo WhatsApp. Todos os direitos reservados.</p>
 </footer>`;
 
     document.getElementById('header-placeholder').innerHTML = headerHTML;

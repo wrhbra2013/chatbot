@@ -1,13 +1,12 @@
-# Arquitetura do Sistema Busca de Preços
+# Arquitetura do Sistema Catálogo WhatsApp
 
 ## Visão Geral
 
 ```
-[Usuário] --> [GitHub Pages / Nginx] --> [Páginas Estáticas (HTML/CSS/JS)]
-                                     --> [VTEX API (proxy Vercel)]
-                                     --> [API Fastify (Docker)]
-                                            --> [PostgreSQL]
-                              (port 80)        (port 3000)       (5432)
+[Usuário] --> [Nginx / Docker] --> [Páginas Estáticas (HTML/CSS/JS)]
+                                --> [API Fastify (Docker)]
+                                       --> [PostgreSQL]
+                          (port 80)       (port 3000)       (5432)
 
 [WhatsApp] --> [Bot Node.js (whatsapp-web.js)]
            --> [API Fastify]
@@ -16,9 +15,9 @@
 ## Componentes
 
 ### 1. Páginas Estáticas (Frontend)
-- `index.html` - Homepage com lista de lojas
-- `paginas/produtos.html` - Busca ao vivo na VTEX
-- `paginas/carrinho.html` - Carrinho de compras
+- `index.html` - Homepage com categorias e produtos em destaque
+- `paginas/produtos.html` - Catálogo de produtos (via API local)
+- `paginas/carrinho.html` - Carrinho (finalização via WhatsApp)
 - `paginas/contato.html` - Contato
 - `static/` - CSS, JS, ícones
 
@@ -26,19 +25,22 @@
 - **Framework**: Fastify
 - **Porta**: 3000
 - **Banco**: PostgreSQL
-- **Proxy VTEX**: `/api/vtex-proxy` (para desenvolvimento local)
+- **CRUD de Produtos**: `/api/produtos` (listar, criar, atualizar, excluir)
+- **Endpoint genérico**: `/api/create`, `/api/read`, `/api/update`, `/api/delete`
 
 ### 3. WhatsApp Bot
 - **Biblioteca**: whatsapp-web.js
+- **Comandos**: produtos, comprar, carrinho, finalizar, detalhe, limpar
 - **Consumo da API**: via REST (fetch)
 
 ## Fluxo de Dados
 
-1. Usuário acessa o site e busca produtos em lojas VTEX
-2. A busca consulta a API da VTEX ao vivo (via proxy)
-3. Usuário adiciona produtos ao carrinho (localStorage)
-4. Usuário finaliza pedido → salvo na API Fastify
-5. WhatsApp Bot gerencia pedidos e notifica o lojista
+1. Produtos são cadastrados via API (`POST /api/produtos`) ou seed (`POST /api/produtos/seed`)
+2. Usuário navega no site ou WhatsApp para ver o catálogo
+3. Usuário adiciona produtos ao carrinho (localStorage no site / cache no bot)
+4. Usuário finaliza pedido exclusivamente pelo WhatsApp (comando `finalizar`)
+5. Pedido é salvo na API Fastify + PostgreSQL
+6. Atendente entra em contato para pagamento e entrega
 
 ## Endpoints da API
 
@@ -54,11 +56,17 @@
 | `POST /api/read` | POST | Ler com filtros |
 | `POST /api/update` | POST | Atualizar registro |
 | `POST /api/delete` | POST | Deletar registro |
-| `GET /api/vtex-proxy` | GET | Proxy para API VTEX |
+| `GET /api/produtos` | GET | Listar produtos (filtros: categoria, search) |
+| `GET /api/produtos/:id` | GET | Detalhes do produto |
+| `POST /api/produtos` | POST | Criar produto |
+| `PUT /api/produtos/:id` | PUT | Atualizar produto |
+| `DELETE /api/produtos/:id` | DELETE | Excluir produto |
+| `POST /api/produtos/seed` | POST | Importar produtos do JSON |
 
 ## Banco de Dados (PostgreSQL)
 
-- `pedidos` - Pedidos realizados
+- `produtos` - Catálogo de produtos
+- `pedidos` - Pedidos realizados (via WhatsApp)
 - `contatos` - Mensagens de contato
 - `carrinhos` - Carrinhos de clientes
 - `configuracoes` - Configurações do sistema
