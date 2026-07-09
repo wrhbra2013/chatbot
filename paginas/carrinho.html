@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Carrinho - Loja Online</title>
+    <title>Carrinho - Busca de Produtos</title>
     <link rel="icon" type="image/png" href="../static/icon/favicon.ico">
     <link rel="stylesheet" href="../static/css/style.css?v=1.0.0">
 </head>
@@ -91,8 +91,9 @@
             carrinhoAtual.forEach(function(item, idx) {
                 var subtotal = parseFloat(item.preco) * (item.qtd || 1);
                 total += subtotal;
+                var lojaTag = item.lojaNome ? '<span class="categoria-tag" style="background:#4a6cf7;color:#fff;font-size:0.75rem;">' + item.lojaNome + '</span> ' : '';
                 html += '<div class="carrinho-item">' +
-                    '<div><strong>' + item.nome + '</strong><br><small>R$ ' + item.preco.toFixed(2).replace('.', ',') + ' un.</small></div>' +
+                    '<div>' + lojaTag + '<strong>' + item.nome + '</strong><br><small>R$ ' + item.preco.toFixed(2).replace('.', ',') + ' un.</small></div>' +
                     '<div class="flex gap-1" style="align-items:center;">' +
                     '<button class="btn btn-sm btn-outline" onclick="alterarQtd(' + idx + ', -1)">-</button>' +
                     '<span>' + (item.qtd || 1) + '</span>' +

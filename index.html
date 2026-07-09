@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Loja Online - Sua Loja de Confiança</title>
+    <title>Busca de Produtos - Encontre os melhores preços</title>
     <link rel="icon" type="image/png" href="static/icon/favicon.ico">
     <link rel="stylesheet" href="static/css/style.css?v=1.0.0">
 </head>
@@ -13,42 +13,26 @@
 
     <main class="main-content">
         <div class="container">
-            <section class="intro-section">
-                <h2>Bem-vindo à Nossa Loja</h2>
-                <p>Os melhores produtos com os melhores preços. Confira nossas categorias e aproveite!</p>
-                <a href="paginas/produtos.html" class="btn">Ver Produtos</a>
+            <section class="intro-section text-center">
+                <h2>Busque Produtos nas Melhores Lojas</h2>
+                <p>Compare preços de Americanas, Casas Bahia e muitas outras lojas. Encontre o melhor preço e peça pelo WhatsApp!</p>
+                <a href="paginas/produtos.html" class="btn" style="font-size:1.1rem;">🔍 Buscar Produtos</a>
             </section>
 
             <section class="section">
-                <h3 class="section-title">Categorias</h3>
-                <div id="categorias-container" class="dashboard-grid">
-                    <div class="dashboard-card text-center">
-                        <h3>📱 Eletrônicos</h3>
-                        <p>Fones, carregadores, caixas de som</p>
-                        <a href="paginas/produtos.html?categoria=eletronicos" class="card-link">Ver &rarr;</a>
-                    </div>
-                    <div class="dashboard-card text-center">
-                        <h3>👕 Moda</h3>
-                        <p>Camisas, tênis, mochilas</p>
-                        <a href="paginas/produtos.html?categoria=moda" class="card-link">Ver &rarr;</a>
-                    </div>
-                    <div class="dashboard-card text-center">
-                        <h3>🏠 Casa</h3>
-                        <p>Lâmpadas, cadeiras, decoração</p>
-                        <a href="paginas/produtos.html?categoria=casa" class="card-link">Ver &rarr;</a>
-                    </div>
-                </div>
-            </section>
-
-            <section class="section" id="destaques">
-                <h3 class="section-title">Produtos em Destaque</h3>
-                <div id="produtos-destaque" class="produtos-grid"></div>
+                <h3 class="section-title">Lojas Disponíveis</h3>
+                <div id="stores-container" class="dashboard-grid"></div>
             </section>
 
             <section class="section text-center">
-                <div class="card">
-                    <h3>🛒 Faça seu Pedido pelo WhatsApp</h3>
-                    <p>Atendimento rápido e fácil. Envie sua lista e finalize seu pedido!</p>
+                <div class="card" style="max-width:500px;margin:0 auto;">
+                    <h3>🛒 Como Funciona</h3>
+                    <ol style="text-align:left;">
+                        <li>Escolha uma loja e busque por um produto</li>
+                        <li>Adicione os produtos ao carrinho</li>
+                        <li>Finalize o pedido informando seus dados</li>
+                        <li>Um atendente entrará em contato pelo WhatsApp</li>
+                    </ol>
                     <a href="paginas/carrinho.html" class="btn mt-1">Ver Carrinho</a>
                 </div>
             </section>
@@ -57,39 +41,49 @@
 
     <div id="footer-placeholder"></div>
 
-    <script src="static/js/storage.js?v=1.0.0"></script>
     <script src="static/js/components.js?v=1.0.0"></script>
     <script>
-        async function carregarDestaques() {
-            try {
-                var produtos = await ProdutosStore.getAll();
-                var container = document.getElementById('produtos-destaque');
-                if (!produtos || produtos.length === 0) {
-                    container.innerHTML = '<p class="text-center">Nenhum produto disponível no momento.</p>';
-                    return;
-                }
-                var destaques = produtos.filter(p => p.ativo !== false).slice(0, 6);
-                container.innerHTML = destaques.map(function(p) {
-                    var img = p.imagem || 'https://picsum.photos/seed/' + p.id + '/400/400';
-                    return '<div class="produto-card">' +
-                        '<img class="produto-img" src="' + img + '" alt="' + p.nome + '" loading="lazy">' +
-                        '<div class="produto-body">' +
-                        '<span class="categoria-tag">' + (p.categoria || 'Geral') + '</span>' +
-                        '<h3>' + p.nome + '</h3>' +
-                        '<div class="preco">R$ ' + parseFloat(p.preco || 0).toFixed(2).replace('.', ',') + '</div>' +
-                        '<p class="descricao">' + (p.descricao || '') + '</p>' +
-                        '<a href="paginas/produtos.html?produto=' + p.id + '" class="btn btn-sm">Ver Detalhes</a>' +
-                        '</div></div>';
-                }).join('');
-            } catch (e) {
-                console.error('Erro ao carregar destaques:', e);
-                document.getElementById('produtos-destaque').innerHTML = '<p class="text-center">Erro ao carregar produtos.</p>';
-            }
-        }
+        var BUILTIN_STORES = [
+            ["www.americanas.com.br", "Americanas"],
+            ["www.animale.com.br", "Animale"],
+            ["www.aramis.com.br", "Aramis"],
+            ["www.bemol.com.br", "Bemol"],
+            ["www.brastemp.com.br", "Brastemp"],
+            ["www.cea.com.br", "C&A"],
+            ["www.cobasi.com.br", "Cobasi"],
+            ["www.consul.com.br", "Consul"],
+            ["www.drogariaspacheco.com.br", "Drogaria Pacheco"],
+            ["www.drogariasaopaulo.com.br", "Drogaria São Paulo"],
+            ["www.epocacosmeticos.com.br", "Época Cosméticos"],
+            ["www.extrafarma.com.br", "Extrafarma"],
+            ["www.farmrio.com.br", "Farm Rio"],
+            ["www.hinode.com.br", "Hinode"],
+            ["www.kopenhagen.com.br", "Kopenhagen"],
+            ["www.lojasrede.com.br", "Lojas Rede"],
+            ["www.malwee.com.br", "Malwee"],
+            ["www.oceane.com.br", "Oceane"],
+            ["www.olympikus.com.br", "Olympikus"],
+            ["www.paguemenos.com.br", "Pague Menos"],
+            ["www.pandorajoias.com.br", "Pandora Joias"],
+            ["www.rihappy.com.br", "Ri Happy"],
+            ["www.santalolla.com.br", "Santa Lolla"],
+            ["www.telhanorte.com.br", "Telhanorte"],
+            ["www.tng.com.br", "TNG"],
+            ["www.tokstok.com.br", "Tok&Stok"],
+            ["www.urbanarts.com.br", "Urban Arts"],
+            ["www.vivara.com.br", "Vivara"],
+        ];
 
-        document.addEventListener('DOMContentLoaded', function() {
-            carregarDestaques();
-        });
+        var container = document.getElementById('stores-container');
+        var html = '';
+        for (var i = 0; i < BUILTIN_STORES.length; i++) {
+            var name = BUILTIN_STORES[i][1];
+            html += '<div class="dashboard-card text-center">' +
+                '<h3>' + name + '</h3>' +
+                '<a href="paginas/produtos.html?loja=' + encodeURIComponent(BUILTIN_STORES[i][0]) + '" class="card-link">Buscar nesta loja &rarr;</a>' +
+                '</div>';
+        }
+        container.innerHTML = html;
     </script>
 </body>
 </html>

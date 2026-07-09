@@ -1,7 +1,7 @@
 {
-  "name": "whatsapp-ecommerce",
-  "version": "2.0.0",
-  "description": "Sistema de e-commerce com WhatsApp Bot + Site Estático + API",
+  "name": "buscaprecos",
+  "version": "3.0.0",
+  "description": "Buscador de preços VTEX + WhatsApp Bot + API",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",

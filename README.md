@@ -1,9 +1,9 @@
-# E-commerce WhatsApp + Site Estático
+# Busca de Preços VTEX + WhatsApp
 
-Sistema completo de e-commerce com:
-- **WhatsApp Bot** para atendimento e vendas
-- **Site estático** para navegação web
-- **API REST** (Fastify + PostgreSQL) para persistência de dados
+Sistema de busca de produtos em lojas VTEX (Americanas, Casas Bahia etc.) com:
+- **Site estático** para buscar e comparar produtos
+- **WhatsApp Bot** para receber pedidos
+- **API REST** (Fastify + PostgreSQL) para persistência de pedidos/contatos
 
 ## Estrutura
 
@@ -16,20 +16,16 @@ chatbot/
 │   ├── package.json
 │   └── Dockerfile
 ├── paginas/                # Páginas públicas
-│   ├── produtos.html
+│   ├── produtos.html       # Busca VTEX ao vivo
 │   ├── carrinho.html
 │   └── contato.html
-├── admin/                  # Painel administrativo
-│   ├── index.html
-│   ├── produtos.html
-│   └── pedidos.html
 ├── static/                 # Recursos estáticos
 │   ├── css/style.css
 │   └── js/
 │       ├── storage.js      # API client
 │       └── components.js   # Header/Footer
 ├── docker-compose.yml
-├── deploy.sh
+├── install_chatbot
 └── ARQUITETURA.md
 ```
 
@@ -38,7 +34,7 @@ chatbot/
 ### API (Docker)
 
 ```bash
-sudo bash deploy.sh
+sudo bash install_chatbot
 ```
 
 ### API (desenvolvimento)
@@ -58,6 +54,6 @@ API_URL=http://localhost:3000 node index.js
 
 ## Arquitetura
 
-As páginas estáticas (HTML/CSS/JS) consomem a API via `storage.js`.
-O WhatsApp Bot também consome a mesma API para dados persistentes.
-Veja `ARQUITETURA.md` para detalhes.
+- As páginas estáticas consultam a API da VTEX ao vivo (via proxy Vercel em produção, ou via `api/vtex-proxy` em desenvolvimento)
+- Pedidos e contatos são salvos na API Fastify + PostgreSQL
+- WhatsApp Bot gerencia carrinhos e finaliza pedidos na mesma API

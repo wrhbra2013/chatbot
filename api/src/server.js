@@ -263,13 +263,32 @@ fastify.post('/api/table/create', { preHandler: authMiddleware }, async (req, re
   }
 });
 
+fastify.get('/api/vtex-proxy', async (req, res) => {
+  const { domain, ft, _from, _to } = req.query;
+  if (!domain || !ft) {
+    return res.code(400).send({ error: 'domain and ft required' });
+  }
+  const from = _from || '0';
+  const to = _to || '49';
+  const url = 'https://' + domain + '/api/catalog_system/pub/products/search?ft=' + encodeURIComponent(ft) + '&_from=' + from + '&_to=' + to;
+  try {
+    const apiRes = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!apiRes.ok) {
+      return res.code(apiRes.status).send({ error: 'VTEX API error: ' + apiRes.status });
+    }
+    const data = await apiRes.json();
+    return res.code(200).send(data);
+  } catch (e) {
+    return res.code(502).send({ error: e.message });
+  }
+});
+
 const TABLES = [
   { name: 'produtos', columns: 'id UUID PRIMARY KEY, nome TEXT, descricao TEXT, preco DECIMAL(10,2), categoria TEXT, imagem TEXT, estoque INTEGER DEFAULT 0, ativo BOOLEAN DEFAULT true, created_at TIMESTAMP DEFAULT NOW()' },
   { name: 'carrinhos', columns: 'id UUID PRIMARY KEY, cliente_id TEXT, cliente_nome TEXT, itens JSONB DEFAULT \'[]\'::jsonb, total DECIMAL(10,2) DEFAULT 0, status TEXT DEFAULT \'ativo\', created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
   { name: 'pedidos', columns: 'id UUID PRIMARY KEY, cliente_id TEXT, cliente_nome TEXT, cliente_telefone TEXT, itens JSONB DEFAULT \'[]\'::jsonb, total DECIMAL(10,2), status TEXT DEFAULT \'pendente\', forma_pagamento TEXT, observacoes TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
   { name: 'contatos', columns: 'id UUID PRIMARY KEY, nome TEXT, email TEXT, telefone TEXT, mensagem TEXT, lido BOOLEAN DEFAULT false, created_at TIMESTAMP DEFAULT NOW()' },
   { name: 'configuracoes', columns: 'id UUID PRIMARY KEY DEFAULT gen_random_uuid(), chave TEXT UNIQUE, valor TEXT, updated_at TIMESTAMP DEFAULT NOW()' },
-  { name: 'sessoes', columns: 'id UUID PRIMARY KEY, token TEXT UNIQUE, url_aprovacao TEXT, status TEXT DEFAULT \'pendente\', last_sync TIMESTAMP, access_token TEXT, aprovado_em TIMESTAMP, created_at TIMESTAMP DEFAULT NOW()' },
 ];
 
 async function initDB() {
