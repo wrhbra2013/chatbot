@@ -584,8 +584,82 @@ fastify.post('/api/produtos/seed', { preHandler: writeAuthMiddleware }, async (r
   }
 });
 
+fastify.post('/api/seed/all', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const empresaId = 'empresa001';
+    await client.query(
+      'INSERT INTO "empresas" (id, nome, cnpj, telefone, email, endereco, cidade, whatsapp) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO UPDATE SET nome=$2, telefone=$4, whatsapp=$8',
+      [empresaId, 'Loja Exemplo Tech', '00.000.000/0001-01', '(11) 99999-8888', 'contato@lojaexemplo.com.br', 'Rua das Flores, 123', 'Sao Paulo - SP', '5511999998888']
+    );
+
+    const produtos = [
+      { id:'p001', nome:'Notebook Ultra i7', descricao:'16GB RAM, SSD 512GB, Tela 15.6"', preco:4299.90, categoria:'eletronicos', estoque:10 },
+      { id:'p002', nome:'Mouse Sem Fio', descricao:'Ergonomico, 6 botoes, bateria 12 meses', preco:89.90, categoria:'eletronicos', estoque:25 },
+      { id:'p003', nome:'Teclado Mecanico RGB', descricao:'Switch Blue, ABNT2, cabo USB-C', preco:199.90, categoria:'eletronicos', estoque:15 },
+      { id:'p004', nome:'Monitor 27" 4K', descricao:'IPS, HDR10, 60Hz, HDMI+DP', preco:2199.90, categoria:'eletronicos', estoque:5 },
+      { id:'p005', nome:'Camiseta Algodao Premium', descricao:'Tamanhos P ao GG, 5 cores', preco:59.90, categoria:'moda', estoque:40 },
+      { id:'p006', nome:'Tenis Casual Comfort', descricao:'Couro sintetico, palmilha ortopedica', preco:189.90, categoria:'moda', estoque:20 },
+      { id:'p007', nome:'Relogio Digital Esportivo', descricao:'Cronometro, GPS, resistente agua', preco:349.90, categoria:'moda', estoque:12 },
+      { id:'p008', nome:'Luminaria LED Mesa', descricao:'Braco articulado, 3 modos de cor', preco:79.90, categoria:'casa', estoque:18 },
+      { id:'p009', nome:'Organizador de Gavetas', descricao:'Acrilico, 10 divisórias ajustaveis', preco:39.90, categoria:'casa', estoque:30 },
+    ];
+    for (const p of produtos) {
+      await client.query(
+        'INSERT INTO "produtos" (id,nome,descricao,preco,categoria,estoque,empresa_id) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING',
+        [p.id, p.nome, p.descricao, p.preco, p.categoria, p.estoque, empresaId]
+      );
+    }
+
+    const clientes = [
+      { id:'5511999990001@c.us', nome:'Ana Silva', telefone:'5511999990001', endereco:'Av. Paulista, 1000', cidade:'Sao Paulo - SP' },
+      { id:'5511999990002@c.us', nome:'Carlos Oliveira', telefone:'5511999990002', endereco:'Rua Augusta, 500', cidade:'Sao Paulo - SP' },
+      { id:'5511999990003@c.us', nome:'Marina Santos', telefone:'5511999990003', endereco:'Rua Oscar Freire, 200', cidade:'Sao Paulo - SP' },
+    ];
+    for (const c of clientes) {
+      await client.query(
+        'INSERT INTO "clientes" (id,nome,telefone,endereco,cidade) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING',
+        [c.id, c.nome, c.telefone, c.endereco, c.cidade]
+      );
+    }
+
+    const carrinhoId1 = crypto.randomUUID();
+    const carrinhoId2 = crypto.randomUUID();
+    await client.query(
+      'INSERT INTO "carrinhos" (id,cliente_id,cliente_nome,itens,total,status) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO NOTHING',
+      [carrinhoId1, '5511999990001@c.us', 'Ana Silva', JSON.stringify([{id:'p002',nome:'Mouse Sem Fio',preco:89.90,qtd:2},{id:'p005',nome:'Camiseta Algodao Premium',preco:59.90,qtd:1}]), 239.70, 'ativo']
+    );
+    await client.query(
+      'INSERT INTO "carrinhos" (id,cliente_id,cliente_nome,itens,total,status) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO NOTHING',
+      [carrinhoId2, '5511999990002@c.us', 'Carlos Oliveira', JSON.stringify([{id:'p001',nome:'Notebook Ultra i7',preco:4299.90,qtd:1}]), 4299.90, 'ativo']
+    );
+
+    const pedidoId1 = crypto.randomUUID();
+    const pedidoId2 = crypto.randomUUID();
+    await client.query(
+      'INSERT INTO "pedidos" (id,cliente_id,cliente_nome,cliente_telefone,itens,total,status,forma_pagamento) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING',
+      [pedidoId1, '5511999990003@c.us', 'Marina Santos', '5511999990003', JSON.stringify([{id:'p006',nome:'Tenis Casual Comfort',preco:189.90,qtd:1},{id:'p008',nome:'Luminaria LED Mesa',preco:79.90,qtd:2}]), 349.70, 'entregue', 'pix']
+    );
+    await client.query(
+      'INSERT INTO "pedidos" (id,cliente_id,cliente_nome,cliente_telefone,itens,total,status,forma_pagamento) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING',
+      [pedidoId2, '5511999990001@c.us', 'Ana Silva', '5511999990001', JSON.stringify([{id:'p004',nome:'Monitor 27" 4K',preco:2199.90,qtd:1}]), 2199.90, 'pendente', 'whatsapp']
+    );
+
+    await client.query('COMMIT');
+    return { success:true, message:'Base populada com sucesso', data:{ empresa:empresaId, produtos:produtos.length, clientes:clientes.length, carrinhos:2, pedidos:2 } };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    return res.code(500).send({ success:false, error:err.message });
+  } finally {
+    client.release();
+  }
+});
+
 const TABLES = [
-  { name: 'produtos', columns: 'id TEXT PRIMARY KEY, nome TEXT, descricao TEXT, preco DECIMAL(10,2), categoria TEXT, imagem TEXT, estoque INTEGER DEFAULT 0, ativo BOOLEAN DEFAULT true, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
+  { name: 'empresas', columns: 'id TEXT PRIMARY KEY, nome TEXT, cnpj TEXT, telefone TEXT, email TEXT, endereco TEXT, cidade TEXT, whatsapp TEXT, ativo BOOLEAN DEFAULT true, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
+  { name: 'produtos', columns: 'id TEXT PRIMARY KEY, nome TEXT, descricao TEXT, preco DECIMAL(10,2), categoria TEXT, imagem TEXT, estoque INTEGER DEFAULT 0, ativo BOOLEAN DEFAULT true, empresa_id TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
   { name: 'clientes', columns: 'id TEXT PRIMARY KEY, nome TEXT, telefone TEXT, endereco TEXT, cidade TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
   { name: 'carrinhos', columns: 'id UUID PRIMARY KEY, cliente_id TEXT, cliente_nome TEXT, itens JSONB DEFAULT \'[]\'::jsonb, total DECIMAL(10,2) DEFAULT 0, status TEXT DEFAULT \'ativo\', created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
   { name: 'pedidos', columns: 'id UUID PRIMARY KEY, cliente_id TEXT, cliente_nome TEXT, cliente_telefone TEXT, itens JSONB DEFAULT \'[]\'::jsonb, total DECIMAL(10,2), status TEXT DEFAULT \'pendente\', forma_pagamento TEXT, observacoes TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
