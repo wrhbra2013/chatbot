@@ -930,232 +930,210 @@ CSS
 mkdir -p "$INSTALL_DIR/static/icon"
 touch "$INSTALL_DIR/static/icon/favicon.ico"
 
-info "Criando index.js (bot WhatsApp)..."
+info "Criando index.js (bot WhatsApp com Baileys)..."
 cat > "$INSTALL_DIR/index.js" << 'BOTEOF'
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import qrcode from 'qrcode-terminal';
+
 const API_BASE = process.env.API_URL || 'http://localhost:3000';
 const API_TOKEN = process.env.API_TOKEN || 'ecommerce-api-token';
 const API_WRITE_KEY = process.env.API_WRITE_KEY || API_TOKEN;
+
 let carrinhosCache = {};
 const userSession = {};
 
-async function api(method, path, body) {
-  const url = API_BASE + path;
-  const opts = {
-    method,
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + API_TOKEN },
-  };
-  if (body) { opts.body = JSON.stringify(body); opts.headers['X-Write-Key'] = API_WRITE_KEY; }
-  const res = await fetch(url, opts);
-  return res.json();
+async function api(m, p, b) {
+  const o = { method: m, headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + API_TOKEN } };
+  if (b) { o.body = JSON.stringify(b); o.headers['X-Write-Key'] = API_WRITE_KEY; }
+  return (await fetch(API_BASE + p, o)).json();
 }
-
 function fmt(v) { return 'R$ ' + v.toFixed(2).replace('.', ','); }
 function esc(s) { return String(s).replace(/([*_~`>#+\-=|{}.!])/g, '\\$1'); }
 
-function menuPrincipal(nome) {
-  const saudacao = nome ? 'Ola, ' + esc(nome) + '!' : 'Bem-vindo!';
-  return '🏪 *Menu Principal*\n' + saudacao + '\n\n1. 📦 Ver Produtos\n2. 🛒 Meu Carrinho\n3. 👤 Meu Cadastro\n4. ✅ Finalizar Pedido\n5. 🗑️ Limpar Carrinho\n6. ❓ Ajuda\n\nDigite o numero da opcao desejada.';
+function menuPrincipal(n) {
+  return '\u{1F3EA} *Menu Principal*\n' + (n ? 'Ola, ' + esc(n) + '!' : 'Bem-vindo!') + '\n\n1. \u{1F4E6} Ver Produtos\n2. \u{1F6D2} Meu Carrinho\n3. \u{1F464} Meu Cadastro\n4. \u2705 Finalizar Pedido\n5. \u{1F5D1}\uFE0F Limpar Carrinho\n6. \u2753 Ajuda\n\nDigite o numero da opcao desejada.';
 }
 
-async function menuCategorias(num) {
+async function menuCategorias(j) {
   try {
-    const resp = await fetch(API_BASE + '/data/produtos');
-    const produtos = await resp.json();
-    const cats = {}; produtos.forEach(p => { if (p.categoria) cats[p.categoria] = true; });
-    const lista = Object.keys(cats).sort();
-    let msg = '📦 *Categorias*\n\n';
-    lista.forEach((c, i) => { msg += (i + 1) + '. ' + c.charAt(0).toUpperCase() + c.slice(1) + '\n'; });
-    msg += '\n0. 🔙 Voltar\n\nDigite o numero da categoria.';
-    userSession[num] = { menu: 'categorias', cats: lista };
-    return msg;
+    const r = await fetch(API_BASE + '/data/produtos');
+    const ps = await r.json();
+    const cs = {}; ps.forEach(p => { if (p.categoria) cs[p.categoria] = true; });
+    const l = Object.keys(cs).sort();
+    let m = '\u{1F4E6} *Categorias*\n\n';
+    l.forEach((c, i) => { m += (i + 1) + '. ' + c.charAt(0).toUpperCase() + c.slice(1) + '\n'; });
+    m += '\n0. \u{1F519} Voltar\n\nDigite o numero da categoria.';
+    userSession[j] = { menu: 'categorias', cats: l };
+    return m;
   } catch (e) { return 'Erro ao carregar categorias.'; }
 }
 
-async function listarProdutos(num, categoria, pagina = 0) {
-  const params = categoria ? '?categoria=' + encodeURIComponent(categoria) + '&limit=10&offset=' + (pagina * 10) : '?limit=10&offset=' + (pagina * 10);
+async function listarProdutos(j, cat, pag = 0) {
+  const p = cat ? '?categoria=' + encodeURIComponent(cat) + '&limit=10&offset=' + (pag * 10) : '?limit=10&offset=' + (pag * 10);
   try {
-    const result = await api('GET', '/api/produtos' + params);
-    const lista = result.data || [];
-    if (!lista.length) return 'Nenhum produto encontrado' + (categoria ? ' em ' + esc(categoria) : '') + '.';
-    let msg = '*📦 Produtos' + (categoria ? ' - ' + esc(categoria) : '') + '*\n\n';
-    lista.forEach((p, i) => {
-      msg += (pagina * 10 + i + 1) + '. *' + esc(p.nome) + '*\n   ID: ' + p.id + ' | ' + fmt(parseFloat(p.preco));
-      if (p.estoque > 0) msg += ' | Estq: ' + p.estoque;
-      msg += '\n\n';
+    const r = await api('GET', '/api/produtos' + p);
+    const l = r.data || [];
+    if (!l.length) return 'Nenhum produto encontrado' + (cat ? ' em ' + esc(cat) : '') + '.';
+    let m = '*\u{1F4E6} Produtos' + (cat ? ' - ' + esc(cat) : '') + '*\n\n';
+    l.forEach((p, i) => {
+      m += (pag * 10 + i + 1) + '. *' + esc(p.nome) + '*\n   ID: ' + p.id + ' | ' + fmt(parseFloat(p.preco));
+      if (p.estoque > 0) m += ' | Estq: ' + p.estoque;
+      m += '\n\n';
     });
-    msg += 'Para comprar: *comprar <id> [qtd]*\nPara detalhes: *detalhe <id>*\n';
-    if (lista.length === 10) msg += '\nProxima pagina: *mais*';
-    msg += '\n\n0. 🔙 Voltar';
-    return msg;
+    m += 'Para comprar: *comprar <id> [qtd]*\nPara detalhes: *detalhe <id>*\n';
+    if (l.length === 10) m += '\nProxima pagina: *mais*';
+    m += '\n\n0. \u{1F519} Voltar';
+    return m;
   } catch (e) { return 'Erro ao buscar produtos.'; }
 }
 
-async function msgCarrinho(num) {
-  const c = carrinhosCache[num] || [];
-  if (!c.length) return '🛒 *Carrinho vazio!*\n\nAdicione produtos com *comprar <id>* ou pelo site.\n\n0. 🔙 Voltar';
-  let total = 0;
-  const linhas = c.map((i, idx) => { total += i.preco * i.qtd; return (idx + 1) + '. ' + esc(i.nome) + ' x' + i.qtd + ' = ' + fmt(i.preco * i.qtd); }).join('\n');
-  return '🛒 *Carrinho*\n\n' + linhas + '\n\n*Total:* ' + fmt(total) + '\n\n4. ✅ Finalizar\n5. 🗑️ Limpar\n\n0. 🔙 Voltar';
+async function msgCarrinho(j) {
+  const c = carrinhosCache[j] || [];
+  if (!c.length) return '\u{1F6D2} *Carrinho vazio!*\n\nAdicione produtos com *comprar <id>* ou pelo site.\n\n0. \u{1F519} Voltar';
+  const t = c.reduce((s, i) => s + parseFloat(i.preco) * i.qtd, 0);
+  return '\u{1F6D2} *Carrinho*\n\n' + c.map((i, idx) => (idx + 1) + '. ' + esc(i.nome) + ' x' + i.qtd + ' = ' + fmt(parseFloat(i.preco) * i.qtd)).join('\n') + '\n\n*Total:* ' + fmt(t) + '\n\n4. \u2705 Finalizar\n5. \u{1F5D1}\uFE0F Limpar\n\n0. \u{1F519} Voltar';
 }
 
-async function verCadastro(num) {
-  try { const result = await api('GET', '/api/clientes/' + encodeURIComponent(num)); return result.success ? result.data : null; }
-  catch (e) { return null; }
+async function verCadastro(j) {
+  try { const r = await api('GET', '/api/clientes/' + encodeURIComponent(j)); return r.success ? r.data : null; } catch (e) { return null; }
 }
 
-const client = new Client({ authStrategy: new LocalAuth({ clientId: 'ecommerce-bot' }), puppeteer: { headless: true, executablePath: '/usr/local/bin/ungoogled-chromium', args: ['--no-sandbox', '--disable-gpu'] } });
+function formatCadastro(c) {
+  return '\u{1F464} *Meu Cadastro*\n\n*Nome:* ' + esc(c.nome) + '\n*Telefone:* ' + esc(c.telefone) + (c.endereco ? '\n*Endereco:* ' + esc(c.endereco) : '') + (c.cidade ? '\n*Cidade:* ' + esc(c.cidade) : '') + '\n\n1. \u270F\uFE0F Editar nome\n2. \u270F\uFE0F Editar endereco\n3. \u270F\uFE0F Editar cidade\n4. \u274C Excluir cadastro\n0. \u{1F519} Voltar';
+}
 
-client.on('qr', async qr => {
-  qrcode.generate(qr, { small: true });
-  try { await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr, connected: false }) }); } catch (e) {}
-});
-client.on('ready', async () => {
-  console.log('Chatbot de e-commerce online!');
-  try { await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr: null, connected: true }) }); } catch (e) {}
-});
-client.on('disconnected', async () => {
-  try { await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr: null, connected: false }) }); } catch (e) {}
-});
+async function enviar(s, j, t) { await s.sendMessage(j, { text: t }); }
 
-client.on('message', async msg => {
-  const num = msg.from;
-  if (!carrinhosCache[num]) carrinhosCache[num] = [];
-  const t = msg.body.trim();
-  const tl = t.toLowerCase();
+async function startBot() {
+  const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+  const sock = makeWASocket({ auth: state, printQRInTerminal: true, syncFullHistory: false, browser: ['Ecommerce Bot', 'Chrome', '1.0'] });
+  sock.ev.on('creds.update', saveCreds);
 
-  if (tl === 'menu' || tl === 'inicio' || tl === 'oi' || tl === 'ola' || tl === '0' || tl === 'voltar') {
-    delete userSession[num];
-    const cliente = await verCadastro(num);
-    return client.sendMessage(num, menuPrincipal(cliente ? cliente.nome : null));
-  }
+  sock.ev.on('connection.update', async (up) => {
+    const { connection, lastDisconnect, qr } = up;
+    if (qr) {
+      qrcode.generate(qr, { small: true });
+      try { await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr, connected: false }) }); } catch (e) {}
+    }
+    if (connection === 'open') {
+      console.log('Chatbot de e-commerce online (Baileys)!');
+      try { await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr: null, connected: true }) }); } catch (e) {}
+    }
+    if (connection === 'close') {
+      const recon = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log('Conexao fechada, reconectando:', recon);
+      try { await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr: null, connected: false }) }); } catch (e) {}
+      if (recon) startBot();
+    }
+  });
 
-  if (tl === 'ajuda' || tl === '6') {
-    return client.sendMessage(num, '❓ *Ajuda - Comandos*\n\nMenu numerado:\n1 - Ver produtos\n2 - Carrinho\n3 - Meu cadastro\n4 - Finalizar\n5 - Limpar\n6 - Ajuda\n0 - Voltar\n\nComandos diretos:\n*produtos* - Catalogo\n*comprar <id> [qtd]* - Adicionar\n*detalhe <id>* - Detalhes\n*carrinho* - Ver carrinho\n*finalizar* - Confirmar\n*cadastro* - Meu cadastro\n*menu* - Menu principal');
-  }
+  sock.ev.on('messages.upsert', async ({ messages }) => {
+    for (const msg of messages) {
+      if (msg.key.fromMe || !msg.message) continue;
+      const j = msg.key.remoteJid;
+      if (j.includes('@g.us')) continue;
+      if (!carrinhosCache[j]) carrinhosCache[j] = [];
+      const t = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
+      const tl = t.toLowerCase();
 
-  if (tl === 'produtos' || tl === '1') return client.sendMessage(num, await menuCategorias(num));
-  if (tl.startsWith('produtos ')) { const cat = tl.slice(9).trim(); userSession[num] = { menu: 'produtos', categoria: cat }; return client.sendMessage(num, await listarProdutos(num, cat)); }
-
-  if (tl === 'mais') {
-    const sess = userSession[num];
-    if (!sess || sess.menu !== 'produtos') return client.sendMessage(num, 'Use *produtos* primeiro.');
-    sess.pagina = (sess.pagina || 0) + 1;
-    return client.sendMessage(num, await listarProdutos(num, sess.categoria, sess.pagina));
-  }
-
-  if (tl.startsWith('detalhe ')) {
-    const id = tl.slice(8).trim();
-    if (!id) return client.sendMessage(num, 'Use: *detalhe <id>*');
-    try {
-      const result = await api('GET', '/api/produtos/' + encodeURIComponent(id));
-      if (!result.success) return client.sendMessage(num, 'Produto nao encontrado.');
-      const p = result.data;
-      let m = '*📄 ' + esc(p.nome) + '*\n\n';
-      if (p.descricao) m += esc(p.descricao) + '\n\n';
-      m += '*Preco:* ' + fmt(parseFloat(p.preco)) + '\n*Categoria:* ' + esc(p.categoria) + '\n*Estoque:* ' + (p.estoque > 0 ? p.estoque + ' unidades' : 'Indisponivel') + '\n';
-      if (p.imagem) m += '\n🔗 ' + p.imagem + '\n';
-      m += '\nPara comprar: *comprar ' + esc(p.id) + ' [qtd]*';
-      return client.sendMessage(num, m);
-    } catch (e) { return client.sendMessage(num, 'Erro ao buscar detalhes.'); }
-  }
-
-  if (tl.startsWith('comprar ')) {
-    const args = tl.slice(8).trim().split(/\s+/);
-    const idProd = args[0]; const qtd = parseInt(args[1]) || 1;
-    if (!idProd) return client.sendMessage(num, 'Use: *comprar <id> [qtd]*');
-    try {
-      const result = await api('GET', '/api/produtos/' + encodeURIComponent(idProd));
-      if (!result.success) return client.sendMessage(num, 'Produto nao encontrado.');
-      const p = result.data;
-      if (p.estoque < 1) return client.sendMessage(num, 'Produto indisponivel no momento.');
-      const existente = carrinhosCache[num].find(i => i.id === p.id);
-      if (existente) { existente.qtd += qtd; } else { carrinhosCache[num].push({ id: p.id, nome: p.nome, preco: parseFloat(p.preco), qtd, imagem: p.imagem || '', categoria: p.categoria }); }
-      return client.sendMessage(num, '✅ *' + esc(p.nome) + '* x' + qtd + ' adicionado ao carrinho!\nTotal: ' + fmt(carrinhosCache[num].reduce((s, i) => s + i.preco * i.qtd, 0)) + '\n\n1. 📦 Ver mais produtos\n2. 🛒 Ver carrinho\n0. 🔙 Menu principal');
-    } catch (e) { return client.sendMessage(num, 'Erro ao adicionar produto.'); }
-  }
-
-  if (tl === 'carrinho' || tl === 'ver_carrinho' || tl === '2') return client.sendMessage(num, await msgCarrinho(num));
-
-  if (tl === 'cadastro' || tl === '3') {
-    const cliente = await verCadastro(num);
-    if (cliente) return client.sendMessage(num, '👤 *Meu Cadastro*\n\n*Nome:* ' + esc(cliente.nome) + '\n*Telefone:* ' + esc(cliente.telefone) + (cliente.endereco ? '\n*Endereco:* ' + esc(cliente.endereco) : '') + (cliente.cidade ? '\n*Cidade:* ' + esc(cliente.cidade) : '') + '\n\n1. ✏️ Editar nome\n2. ✏️ Editar endereco\n3. ✏️ Editar cidade\n4. ❌ Excluir cadastro\n0. 🔙 Voltar');
-    userSession[num] = { menu: 'cadastro_aguardando_nome' };
-    return client.sendMessage(num, '👤 *Novo Cadastro*\n\nVamos criar seu cadastro! Digite seu *nome completo*:\n\n0. 🔙 Cancelar');
-  }
-
-  if (userSession[num] && userSession[num].menu === 'cadastro_aguardando_nome') {
-    if (t.length < 3) return client.sendMessage(num, 'Nome invalido. Digite seu nome completo ou 0 para cancelar.');
-    userSession[num] = { menu: 'cadastro_aguardando_endereco', nome: t };
-    return client.sendMessage(num, 'Obrigado, ' + esc(t) + '! Agora digite seu *endereco* (rua, numero, bairro):\n\n0. 🔙 Cancelar');
-  }
-
-  if (userSession[num] && userSession[num].menu === 'cadastro_aguardando_endereco') {
-    if (t.length < 5) return client.sendMessage(num, 'Endereco invalido. Digite seu endereco ou 0 para cancelar.');
-    userSession[num] = { menu: 'cadastro_aguardando_cidade', nome: userSession[num].nome, endereco: t };
-    return client.sendMessage(num, 'Agora digite sua *cidade*:\n\n0. 🔙 Cancelar');
-  }
-
-  if (userSession[num] && userSession[num].menu === 'cadastro_aguardando_cidade') {
-    if (t.length < 2) return client.sendMessage(num, 'Cidade invalida. Digite sua cidade ou 0 para cancelar.');
-    const dados = userSession[num];
-    try {
-      const result = await api('POST', '/api/clientes', { id: num, nome: dados.nome, telefone: num.replace('@c.us', ''), endereco: dados.endereco, cidade: t });
-      if (result.success) { delete userSession[num]; return client.sendMessage(num, '✅ *Cadastro realizado!*\n\n*Nome:* ' + esc(dados.nome) + '\n*Endereco:* ' + esc(dados.endereco) + '\n*Cidade:* ' + esc(t) + '\n\n1. 📦 Ver produtos\n0. 🔙 Menu principal'); }
-      else return client.sendMessage(num, 'Erro ao salvar cadastro.');
-    } catch (e) { return client.sendMessage(num, 'Erro ao salvar cadastro.'); }
-  }
-
-  if (userSession[num] && userSession[num].menu === 'editando_nome') {
-    if (t.length < 3) return client.sendMessage(num, 'Nome invalido.');
-    try { await api('PUT', '/api/clientes/' + encodeURIComponent(num), { nome: t }); delete userSession[num]; return client.sendMessage(num, '✅ Nome atualizado!\n\n0. 🔙 Voltar'); } catch (e) { return client.sendMessage(num, 'Erro ao atualizar.'); }
-  }
-
-  if (userSession[num] && userSession[num].menu === 'editando_endereco') {
-    if (t.length < 5) return client.sendMessage(num, 'Endereco invalido.');
-    try { await api('PUT', '/api/clientes/' + encodeURIComponent(num), { endereco: t }); delete userSession[num]; return client.sendMessage(num, '✅ Endereco atualizado!\n\n0. 🔙 Voltar'); } catch (e) { return client.sendMessage(num, 'Erro ao atualizar.'); }
-  }
-
-  if (userSession[num] && userSession[num].menu === 'editando_cidade') {
-    if (t.length < 2) return client.sendMessage(num, 'Cidade invalida.');
-    try { await api('PUT', '/api/clientes/' + encodeURIComponent(num), { cidade: t }); delete userSession[num]; return client.sendMessage(num, '✅ Cidade atualizada!\n\n0. 🔙 Voltar'); } catch (e) { return client.sendMessage(num, 'Erro ao atualizar.'); }
-  }
-
-  if (userSession[num] && userSession[num].menu === 'confirmar_exclusao') {
-    if (tl === 'sim') { try { await api('DELETE', '/api/clientes/' + encodeURIComponent(num)); delete userSession[num]; return client.sendMessage(num, '✅ Cadastro excluido.\n\n0. 🔙 Menu principal'); } catch (e) { return client.sendMessage(num, 'Erro ao excluir.'); } }
-    else { delete userSession[num]; return client.sendMessage(num, 'Exclusao cancelada.\n\n0. 🔙 Voltar'); }
-  }
-
-  if (tl === 'finalizar' || tl === '4') {
-    const c = carrinhosCache[num];
-    if (!c || !c.length) return client.sendMessage(num, 'Carrinho vazio!');
-    const linhas = c.map(i => esc(i.nome) + ' x' + i.qtd + ' = ' + fmt(i.preco * i.qtd)).join('\n');
-    const total = c.reduce((s, i) => s + i.preco * i.qtd, 0);
-    try { await api('POST', '/api/create', { table: 'pedidos', data: { cliente_id: num, cliente_nome: 'Cliente WhatsApp', cliente_telefone: num.replace('@c.us', ''), itens: JSON.stringify(c), total, status: 'pendente', forma_pagamento: 'whatsapp' } }); } catch (e) { console.error('Erro:', e.message); }
-    delete carrinhosCache[num];
-    return client.sendMessage(num, '✅ *Pedido Confirmado!*\n\n' + linhas + '\n\n*Total:* ' + fmt(total) + '\n\nUm atendente entrara em contato.\n\n0. 🔙 Menu principal');
-  }
-
-  if (tl === 'limpar' || tl === '5') { delete carrinhosCache[num]; return client.sendMessage(num, 'Carrinho limpo!\n\n0. 🔙 Menu principal'); }
-
-  if (userSession[num] && userSession[num].menu === 'categorias') {
-    const idx = parseInt(t) - 1;
-    const cat = userSession[num].cats[idx];
-    if (cat) { userSession[num] = { menu: 'produtos', categoria: cat, pagina: 0 }; return client.sendMessage(num, await listarProdutos(num, cat)); }
-  }
-
-  if (userSession[num] && userSession[num].menu === 'visualizando_cadastro') {
-    if (tl === '1') { userSession[num] = { menu: 'editando_nome' }; return client.sendMessage(num, 'Digite o novo *nome*:\n\n0. 🔙 Cancelar'); }
-    if (tl === '2') { userSession[num] = { menu: 'editando_endereco' }; return client.sendMessage(num, 'Digite o novo *endereco*:\n\n0. 🔙 Cancelar'); }
-    if (tl === '3') { userSession[num] = { menu: 'editando_cidade' }; return client.sendMessage(num, 'Digite a nova *cidade*:\n\n0. 🔙 Cancelar'); }
-    if (tl === '4') { userSession[num] = { menu: 'confirmar_exclusao' }; return client.sendMessage(num, 'Tem certeza? Digite *sim* ou *nao*.'); }
-  }
-
-  client.sendMessage(num, 'Nao entendi. Digite *menu* para comecar.');
-});
-
-client.initialize();
+      if (tl === 'menu' || tl === 'inicio' || tl === 'oi' || tl === 'ola' || tl === '0' || tl === 'voltar') {
+        delete userSession[j]; const c = await verCadastro(j); return enviar(sock, j, menuPrincipal(c ? c.nome : null));
+      }
+      if (tl === 'ajuda' || tl === '6') return enviar(sock, j, '\u2753 *Ajuda - Comandos*\n\nMenu numerado:\n1 - Ver produtos por categoria\n2 - Ver carrinho\n3 - Meu cadastro (nome, endereco)\n4 - Finalizar pedido\n5 - Limpar carrinho\n6 - Ajuda\n0 - Voltar ao menu\n\nComandos diretos:\n*produtos* - Listar catalogo\n*comprar <id> [qtd]* - Adicionar ao carrinho\n*detalhe <id>* - Detalhes do produto\n*carrinho* - Ver carrinho\n*finalizar* - Confirmar pedido\n*cadastro* - Meu cadastro\n*menu* - Menu principal');
+      if (tl === 'produtos' || tl === '1') return enviar(sock, j, await menuCategorias(j));
+      if (tl.startsWith('produtos ')) { const cat = tl.slice(9).trim(); userSession[j] = { menu: 'produtos', categoria: cat }; return enviar(sock, j, await listarProdutos(j, cat)); }
+      if (tl === 'mais') {
+        const s = userSession[j];
+        if (!s || s.menu !== 'produtos') return enviar(sock, j, 'Use *produtos* primeiro.');
+        s.pagina = (s.pagina || 0) + 1; return enviar(sock, j, await listarProdutos(j, s.categoria, s.pagina));
+      }
+      if (tl.startsWith('detalhe ')) {
+        const id = tl.slice(8).trim(); if (!id) return enviar(sock, j, 'Use: *detalhe <id>*');
+        try {
+          const r = await api('GET', '/api/produtos/' + encodeURIComponent(id));
+          if (!r.success) return enviar(sock, j, 'Produto nao encontrado.');
+          const p = r.data;
+          let m = '*\u{1F4C4} ' + esc(p.nome) + '*\n\n';
+          if (p.descricao) m += esc(p.descricao) + '\n\n';
+          m += '*Preco:* ' + fmt(parseFloat(p.preco)) + '\n*Categoria:* ' + esc(p.categoria) + '\n*Estoque:* ' + (p.estoque > 0 ? p.estoque + ' unidades' : 'Indisponivel') + '\n';
+          if (p.imagem) m += '\n\u{1F517} ' + p.imagem + '\n';
+          m += '\nPara comprar: *comprar ' + esc(p.id) + ' [qtd]*'; return enviar(sock, j, m);
+        } catch (e) { return enviar(sock, j, 'Erro ao buscar detalhes.'); }
+      }
+      if (tl.startsWith('comprar ')) {
+        const args = tl.slice(8).trim().split(/\s+/); const id = args[0]; const q = parseInt(args[1]) || 1;
+        if (!id) return enviar(sock, j, 'Use: *comprar <id> [qtd]*');
+        try {
+          const r = await api('GET', '/api/produtos/' + encodeURIComponent(id));
+          if (!r.success) return enviar(sock, j, 'Produto nao encontrado.');
+          const p = r.data; if (p.estoque < 1) return enviar(sock, j, 'Produto indisponivel no momento.');
+          const e = carrinhosCache[j].find(i => i.id === p.id);
+          if (e) { e.qtd += q; } else { carrinhosCache[j].push({ id: p.id, nome: p.nome, preco: parseFloat(p.preco), qtd: q, imagem: p.imagem || '', categoria: p.categoria }); }
+          return enviar(sock, j, '\u2705 *' + esc(p.nome) + '* x' + q + ' adicionado ao carrinho!\nTotal: ' + fmt(carrinhosCache[j].reduce((s, i) => s + parseFloat(i.preco) * i.qtd, 0)) + '\n\n1. \u{1F4E6} Ver mais produtos\n2. \u{1F6D2} Ver carrinho\n0. \u{1F519} Menu principal');
+        } catch (e) { return enviar(sock, j, 'Erro ao adicionar produto.'); }
+      }
+      if (tl === 'carrinho' || tl === 'ver_carrinho' || tl === '2') return enviar(sock, j, await msgCarrinho(j));
+      if (tl === 'cadastro' || tl === '3') {
+        const c = await verCadastro(j);
+        if (c) return enviar(sock, j, formatCadastro(c));
+        userSession[j] = { menu: 'cadastro_aguardando_nome' }; return enviar(sock, j, '\u{1F464} *Novo Cadastro*\n\nVamos criar seu cadastro! Digite seu *nome completo*:\n\n0. \u{1F519} Cancelar');
+      }
+      if (userSession[j] && userSession[j].menu === 'cadastro_aguardando_nome') {
+        if (t.length < 3) return enviar(sock, j, 'Nome invalido. Digite seu nome completo ou 0 para cancelar.');
+        userSession[j] = { menu: 'cadastro_aguardando_endereco', nome: t }; return enviar(sock, j, 'Obrigado, ' + esc(t) + '! Agora digite seu *endereco* (rua, numero, bairro):\n\n0. \u{1F519} Cancelar');
+      }
+      if (userSession[j] && userSession[j].menu === 'cadastro_aguardando_endereco') {
+        if (t.length < 5) return enviar(sock, j, 'Endereco invalido. Digite seu endereco ou 0 para cancelar.');
+        userSession[j] = { menu: 'cadastro_aguardando_cidade', nome: userSession[j].nome, endereco: t }; return enviar(sock, j, 'Agora digite sua *cidade*:\n\n0. \u{1F519} Cancelar');
+      }
+      if (userSession[j] && userSession[j].menu === 'cadastro_aguardando_cidade') {
+        if (t.length < 2) return enviar(sock, j, 'Cidade invalida. Digite sua cidade ou 0 para cancelar.');
+        const d = userSession[j];
+        try {
+          const r = await api('POST', '/api/clientes', { id: j, nome: d.nome, telefone: j.split('@')[0], endereco: d.endereco, cidade: t });
+          if (r.success) { delete userSession[j]; return enviar(sock, j, '\u2705 *Cadastro realizado!*\n\n*Nome:* ' + esc(d.nome) + '\n*Endereco:* ' + esc(d.endereco) + '\n*Cidade:* ' + esc(t) + '\n\n1. \u{1F4E6} Ver produtos\n0. \u{1F519} Menu principal'); }
+          return enviar(sock, j, 'Erro ao salvar cadastro.');
+        } catch (e) { return enviar(sock, j, 'Erro ao salvar cadastro.'); }
+      }
+      if (userSession[j] && userSession[j].menu === 'editando_nome') {
+        if (t.length < 3) return enviar(sock, j, 'Nome invalido.');
+        try { await api('PUT', '/api/clientes/' + encodeURIComponent(j), { nome: t }); delete userSession[j]; return enviar(sock, j, '\u2705 Nome atualizado!\n\n0. \u{1F519} Voltar'); } catch (e) { return enviar(sock, j, 'Erro ao atualizar.'); }
+      }
+      if (userSession[j] && userSession[j].menu === 'editando_endereco') {
+        if (t.length < 5) return enviar(sock, j, 'Endereco invalido.');
+        try { await api('PUT', '/api/clientes/' + encodeURIComponent(j), { endereco: t }); delete userSession[j]; return enviar(sock, j, '\u2705 Endereco atualizado!\n\n0. \u{1F519} Voltar'); } catch (e) { return enviar(sock, j, 'Erro ao atualizar.'); }
+      }
+      if (userSession[j] && userSession[j].menu === 'editando_cidade') {
+        if (t.length < 2) return enviar(sock, j, 'Cidade invalida.');
+        try { await api('PUT', '/api/clientes/' + encodeURIComponent(j), { cidade: t }); delete userSession[j]; return enviar(sock, j, '\u2705 Cidade atualizada!\n\n0. \u{1F519} Voltar'); } catch (e) { return enviar(sock, j, 'Erro ao atualizar.'); }
+      }
+      if (userSession[j] && userSession[j].menu === 'confirmar_exclusao') {
+        if (tl === 'sim') { try { await api('DELETE', '/api/clientes/' + encodeURIComponent(j)); delete userSession[j]; return enviar(sock, j, '\u2705 Cadastro excluido.\n\n0. \u{1F519} Menu principal'); } catch (e) { return enviar(sock, j, 'Erro ao excluir.'); } }
+        return enviar(sock, j, 'Exclusao cancelada.\n\n0. \u{1F519} Voltar');
+      }
+      if (tl === 'finalizar' || tl === '4') {
+        const c = carrinhosCache[j]; if (!c || !c.length) return enviar(sock, j, 'Carrinho vazio!');
+        const l = c.map(i => esc(i.nome) + ' x' + i.qtd + ' = ' + fmt(parseFloat(i.preco) * i.qtd)).join('\n');
+        const t2 = c.reduce((s, i) => s + parseFloat(i.preco) * i.qtd, 0);
+        try { await api('POST', '/api/create', { table: 'pedidos', data: { cliente_id: j, cliente_nome: 'Cliente WhatsApp', cliente_telefone: j.split('@')[0], itens: JSON.stringify(c), total: t2, status: 'pendente', forma_pagamento: 'whatsapp' } }); } catch (e) { console.error('Erro:', e.message); }
+        delete carrinhosCache[j]; return enviar(sock, j, '\u2705 *Pedido Confirmado!*\n\n' + l + '\n\n*Total:* ' + fmt(t2) + '\n\nUm atendente entrara em contato.\n\n0. \u{1F519} Menu principal');
+      }
+      if (tl === 'limpar' || tl === '5') { delete carrinhosCache[j]; return enviar(sock, j, 'Carrinho limpo!\n\n0. \u{1F519} Menu principal'); }
+      if (userSession[j] && userSession[j].menu === 'categorias') {
+        const idx = parseInt(t) - 1; const cat = userSession[j].cats[idx];
+        if (cat) { userSession[j] = { menu: 'produtos', categoria: cat, pagina: 0 }; return enviar(sock, j, await listarProdutos(j, cat)); }
+      }
+      if (userSession[j] && userSession[j].menu === 'visualizando_cadastro') {
+        if (tl === '1') { userSession[j] = { menu: 'editando_nome' }; return enviar(sock, j, 'Digite o novo *nome*:\n\n0. \u{1F519} Cancelar'); }
+        if (tl === '2') { userSession[j] = { menu: 'editando_endereco' }; return enviar(sock, j, 'Digite o novo *endereco*:\n\n0. \u{1F519} Cancelar'); }
+        if (tl === '3') { userSession[j] = { menu: 'editando_cidade' }; return enviar(sock, j, 'Digite a nova *cidade*:\n\n0. \u{1F519} Cancelar'); }
+        if (tl === '4') { userSession[j] = { menu: 'confirmar_exclusao' }; return enviar(sock, j, 'Tem certeza? Digite *sim* ou *nao*.'); }
+      }
+      enviar(sock, j, 'Nao entendi. Digite *menu* para comecar.');
+    }
+  });
+}
+startBot();
 BOTEOF
 
 # ==============================================================
@@ -1315,7 +1293,7 @@ echo "  O arquivo index.js (bot WhatsApp) foi criado em: $INSTALL_DIR/index.js"
 echo ""
 echo "  Para executar o bot:"
 echo "  cd $INSTALL_DIR"
-echo "  npm install whatsapp-web.js qrcode-terminal puppeteer"
+echo "  npm install @whiskeysockets/baileys qrcode-terminal"
 echo "  API_URL=https://${EXTERNAL_DOMAIN:-localhost}${API_PATH} API_TOKEN=$API_TOKEN node index.js"
 echo ""
 echo "  Comandos do bot:"
