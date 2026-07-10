@@ -26,10 +26,14 @@
                         <p style="color:#666;">O bot está pronto para receber pedidos.</p>
                     </div>
                     <div id="qr-status-scan" style="display:none;">
-                        <h3>📱 Acesse pelo WhatsApp</h3>
-                        <p style="color:#555;margin-bottom:1rem;">Escaneie o QR code abaixo com o WhatsApp do seu celular:</p>
+                        <h3>📱 Fale Conosco pelo WhatsApp</h3>
+                        <p style="color:#555;margin-bottom:1rem;">Escaneie o QR code ou clique no botão abaixo:</p>
                         <div id="qrcode-container" style="display:inline-block;padding:1rem;background:#fff;border-radius:12px;"></div>
-                        <p style="color:#888;font-size:0.85rem;margin-top:1rem;">Abra o WhatsApp > Menu > WhatsApp Web</p>
+                        <p style="margin-top:1rem;">
+                            <a id="whatsapp-link" href="#" target="_blank" style="display:inline-block;background:#25D366;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">
+                                💬 Fale Conosco
+                            </a>
+                        </p>
                     </div>
                 </div>
             </section>
@@ -38,8 +42,8 @@
                 <div class="card" style="max-width:500px;margin:0 auto;">
                     <h3>📱 Como Funciona</h3>
                     <ol style="text-align:left;">
-                        <li>Abra o WhatsApp e escaneie o QR code acima</li>
-                        <li>Envie <strong>1</strong> para ver produtos</li>
+                        <li>Clique no botão <strong>Fale Conosco</strong> ou escaneie o QR code</li>
+                        <li>Abra o WhatsApp e envie <strong>1</strong> para ver produtos</li>
                         <li>Envie <strong>comprar &lt;id&gt;</strong> para adicionar ao carrinho</li>
                         <li>Envie <strong>4</strong> para finalizar o pedido</li>
                     </ol>
@@ -55,26 +59,40 @@
 
     <script src="static/js/components.js?v=1.0.0"></script>
     <script>
-        function atualizarQR() {
+        var WA_NUMBER = '5511999998888';
+
+        function mostrarWhatsApp(numero) {
+            var link = 'https://wa.me/' + numero.replace(/\D/g, '');
+            document.getElementById('qr-status-loading').style.display = 'none';
+            document.getElementById('qr-status-connected').style.display = 'none';
+            document.getElementById('qr-status-scan').style.display = 'block';
+            document.getElementById('whatsapp-link').href = link;
+            var container = document.getElementById('qrcode-container');
+            container.innerHTML = '';
+            new QRCode(container, {
+                text: link,
+                width: 256,
+                height: 256,
+                colorDark: '#2a254b',
+                colorLight: '#ffffff',
+                correctLevel: QRCode.CorrectLevel.H,
+            });
+        }
+
+        function fetchQR() {
             fetch(API_BASE + '/api/qrcode')
                 .then(function(r) { return r.json(); })
                 .then(function(status) {
-                    var loading = document.getElementById('qr-status-loading');
-                    var connected = document.getElementById('qr-status-connected');
-                    var scan = document.getElementById('qr-status-scan');
-
                     if (status.connected) {
-                        loading.style.display = 'none';
-                        scan.style.display = 'none';
-                        connected.style.display = 'block';
+                        document.getElementById('qr-status-loading').style.display = 'none';
+                        document.getElementById('qr-status-scan').style.display = 'none';
+                        document.getElementById('qr-status-connected').style.display = 'block';
                         return;
                     }
-
                     if (status.qr) {
-                        loading.style.display = 'none';
-                        connected.style.display = 'none';
-                        scan.style.display = 'block';
-
+                        document.getElementById('qr-status-loading').style.display = 'none';
+                        document.getElementById('qr-status-connected').style.display = 'none';
+                        document.getElementById('qr-status-scan').style.display = 'block';
                         var container = document.getElementById('qrcode-container');
                         container.innerHTML = '';
                         new QRCode(container, {
@@ -85,17 +103,23 @@
                             colorLight: '#ffffff',
                             correctLevel: QRCode.CorrectLevel.H,
                         });
-                    } else {
-                        loading.style.display = 'block';
-                        scan.style.display = 'none';
-                        connected.style.display = 'none';
+                        return;
                     }
+                    fetch(API_BASE + '/data/empresas')
+                        .then(function(r) { return r.json(); })
+                        .then(function(lista) {
+                            if (lista && lista.length && lista[0].whatsapp) {
+                                WA_NUMBER = lista[0].whatsapp;
+                            }
+                            mostrarWhatsApp(WA_NUMBER);
+                        })
+                        .catch(function() { mostrarWhatsApp(WA_NUMBER); });
                 })
-                .catch(function() {});
+                .catch(function() { mostrarWhatsApp(WA_NUMBER); });
         }
 
-        atualizarQR();
-        setInterval(atualizarQR, 3000);
+        fetchQR();
+        setInterval(fetchQR, 5000);
     </script>
 </body>
 </html>
