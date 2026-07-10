@@ -3,9 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chatbot E-commerce - Produtos via WhatsApp</title>
+    <title>Chatbot - Produtos via WhatsApp</title>
     <link rel="icon" type="image/png" href="static/icon/favicon.ico">
     <link rel="stylesheet" href="static/css/style.css?v=1.0.0">
+    <script>var API_BASE = window.API_BASE_URL || '';</script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body>
@@ -14,12 +15,6 @@
 
     <main class="main-content">
         <div class="container">
-            <section class="intro-section text-center">
-                <h2>Catálogo de Produtos</h2>
-                <p>Veja nossos produtos e peça diretamente pelo WhatsApp! Adicione itens ao carrinho pelo site ou pelo chat.</p>
-                <a href="paginas/produtos.html" class="btn" style="font-size:1.1rem;">🔍 Ver Produtos</a>
-            </section>
-
             <section class="section">
                 <div id="whatsapp-status" class="card text-center" style="max-width:400px;margin:0 auto 2rem;">
                     <div id="qr-status-loading">
@@ -39,29 +34,18 @@
                 </div>
             </section>
 
-            <section class="section">
-                <h3 class="section-title">Categorias</h3>
-                <div id="categories-container" class="dashboard-grid"></div>
-            </section>
-
-            <section class="section">
-                <h3 class="section-title">Produtos em Destaque</h3>
-                <div id="featured-products" class="produtos-grid"></div>
-            </section>
-
             <section class="section text-center">
                 <div class="card" style="max-width:500px;margin:0 auto;">
                     <h3>📱 Como Funciona</h3>
                     <ol style="text-align:left;">
-                        <li>Navegue pelos produtos no site ou pelo WhatsApp</li>
-                        <li>Adicione ao carrinho com um clique</li>
-                        <li>Envie *finalizar* no WhatsApp para confirmar o pedido</li>
-                        <li>Um atendente entrará em contato para pagamento e entrega</li>
+                        <li>Abra o WhatsApp e escaneie o QR code acima</li>
+                        <li>Envie <strong>1</strong> para ver produtos</li>
+                        <li>Envie <strong>comprar &lt;id&gt;</strong> para adicionar ao carrinho</li>
+                        <li>Envie <strong>4</strong> para finalizar o pedido</li>
                     </ol>
                     <p style="margin-top:1rem;font-size:0.9rem;color:#666;">
-                        Comandos do WhatsApp: <em>produtos</em>, <em>comprar &lt;id&gt;</em>, <em>carrinho</em>, <em>finalizar</em>
+                        Menu: <em>1</em> Produtos | <em>2</em> Carrinho | <em>3</em> Cadastro | <em>4</em> Finalizar | <em>5</em> Limpar
                     </p>
-                    <a href="paginas/carrinho.html" class="btn mt-1">Ver Carrinho</a>
                 </div>
             </section>
         </div>
@@ -71,20 +55,8 @@
 
     <script src="static/js/components.js?v=1.0.0"></script>
     <script>
-        function fmtBRL(v) {
-            return 'R$ ' + v.toFixed(2).replace('.', ',');
-        }
-
-        function escHtml(s) {
-            var d = document.createElement('div');
-            d.textContent = s;
-            return d.innerHTML;
-        }
-
-        var qrCodeInstance = null;
-
         function atualizarQR() {
-            fetch('/api/qrcode')
+            fetch(API_BASE + '/api/qrcode')
                 .then(function(r) { return r.json(); })
                 .then(function(status) {
                     var loading = document.getElementById('qr-status-loading');
@@ -105,7 +77,7 @@
 
                         var container = document.getElementById('qrcode-container');
                         container.innerHTML = '';
-                        qrCodeInstance = new QRCode(container, {
+                        new QRCode(container, {
                             text: status.qr,
                             width: 256,
                             height: 256,
@@ -122,58 +94,8 @@
                 .catch(function() {});
         }
 
-        async function carregarCategorias() {
-            try {
-                var resp = await fetch('/data/produtos');
-                var produtos = await resp.json();
-                var cats = {};
-                produtos.forEach(function(p) { if (p.categoria) cats[p.categoria] = true; });
-
-                var container = document.getElementById('categories-container');
-                var html = '';
-                Object.keys(cats).sort().forEach(function(c) {
-                    html += '<div class="dashboard-card text-center">' +
-                        '<h3>' + c.charAt(0).toUpperCase() + c.slice(1) + '</h3>' +
-                        '<a href="paginas/produtos.html?categoria=' + encodeURIComponent(c) + '" class="card-link">Ver produtos &rarr;</a>' +
-                        '</div>';
-                });
-                container.innerHTML = html || '<p class="text-center" style="grid-column:1/-1;">Nenhuma categoria disponivel.</p>';
-            } catch (e) {
-                console.error('Erro ao carregar categorias:', e);
-            }
-        }
-
-        async function carregarDestaques() {
-            try {
-                var resp = await fetch('/api/produtos?limit=6');
-                var result = await resp.json();
-                var produtos = result.data || [];
-                var container = document.getElementById('featured-products');
-
-                if (!produtos.length) {
-                    container.innerHTML = '<p class="text-center" style="grid-column:1/-1;padding:40px;color:#888;">Nenhum produto cadastrado.</p>';
-                    return;
-                }
-
-                container.innerHTML = produtos.map(function(p) {
-                    var img = p.imagem || 'https://via.placeholder.com/280x180?text=Sem+Imagem';
-                    return '<div class="produto-card">' +
-                        '<span class="categoria-tag">' + escHtml(p.categoria) + '</span>' +
-                        '<img class="produto-img" src="' + img + '" alt="' + escHtml(p.nome) + '" loading="lazy" onerror="this.src=\'https://via.placeholder.com/280x180?text=Sem+Imagem\'">' +
-                        '<div class="produto-body">' +
-                        '<h3>' + escHtml(p.nome) + '</h3>' +
-                        '<div class="preco">' + fmtBRL(parseFloat(p.preco)) + '</div>' +
-                        '</div></div>';
-                }).join('\n');
-            } catch (e) {
-                console.error('Erro ao carregar destaques:', e);
-            }
-        }
-
         atualizarQR();
         setInterval(atualizarQR, 3000);
-        carregarCategorias();
-        carregarDestaques();
     </script>
 </body>
 </html>

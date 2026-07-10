@@ -1,5 +1,4 @@
 import Fastify from 'fastify';
-import fastifyStatic from '@fastify/static';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import pg from 'pg';
@@ -94,12 +93,6 @@ fastify.get('/health', async () => {
 });
 
 fastify.get('/ping', async () => ({ pong: true }));
-
-fastify.get('/api/config', async () => ({
-  token: API_TOKEN,
-  writeKey: API_WRITE_KEY,
-  project: 'ecommerce',
-}));
 
 let botStatus = { qr: null, connected: false };
 
@@ -380,6 +373,7 @@ fastify.post('/api/produtos/seed', { preHandler: writeAuthMiddleware }, async (r
 
 const TABLES = [
   { name: 'produtos', columns: 'id TEXT PRIMARY KEY, nome TEXT, descricao TEXT, preco DECIMAL(10,2), categoria TEXT, imagem TEXT, estoque INTEGER DEFAULT 0, ativo BOOLEAN DEFAULT true, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
+  { name: 'clientes', columns: 'id TEXT PRIMARY KEY, nome TEXT, telefone TEXT, endereco TEXT, cidade TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
   { name: 'carrinhos', columns: 'id UUID PRIMARY KEY, cliente_id TEXT, cliente_nome TEXT, itens JSONB DEFAULT \'[]\'::jsonb, total DECIMAL(10,2) DEFAULT 0, status TEXT DEFAULT \'ativo\', created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
   { name: 'pedidos', columns: 'id UUID PRIMARY KEY, cliente_id TEXT, cliente_nome TEXT, cliente_telefone TEXT, itens JSONB DEFAULT \'[]\'::jsonb, total DECIMAL(10,2), status TEXT DEFAULT \'pendente\', forma_pagamento TEXT, observacoes TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
   { name: 'contatos', columns: 'id UUID PRIMARY KEY, nome TEXT, email TEXT, telefone TEXT, mensagem TEXT, lido BOOLEAN DEFAULT false, created_at TIMESTAMP DEFAULT NOW()' },
@@ -396,27 +390,6 @@ async function initDB() {
     }
   }
 }
-
-await fastify.register(fastifyStatic, {
-  root: PROJECT_ROOT,
-  prefix: '/',
-  wildcard: false,
-  setHeaders: (res, filePath) => {
-    if (filePath.match(/\.html$/)) {
-      res.setHeader('X-Robots-Tag', 'noindex');
-    }
-  },
-});
-
-fastify.setNotFoundHandler(async (req, res) => {
-  const indexPath = path.join(PROJECT_ROOT, 'index.html');
-  if (fs.existsSync(indexPath)) {
-    const content = await fs.promises.readFile(indexPath, 'utf-8');
-    res.type('text/html').send(content);
-  } else {
-    res.code(404).send('Not Found');
-  }
-});
 
 const start = async () => {
   await initDB();

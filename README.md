@@ -15,14 +15,9 @@ chatbot/
 │   ├── src/server.js
 │   ├── package.json
 │   └── Dockerfile
-├── paginas/                # Páginas públicas
-│   ├── produtos.html       # Catálogo via API
-│   ├── carrinho.html       # Carrinho (finaliza via WhatsApp)
-│   └── contato.html
 ├── static/                 # Recursos estáticos
 │   ├── css/style.css
 │   └── js/
-│       ├── storage.js      # API client
 │       └── components.js   # Header/Footer
 ├── data/
 │   └── produtos.json       # Seed de produtos

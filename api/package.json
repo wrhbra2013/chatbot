@@ -10,7 +10,6 @@
     "dotenv": "^16.4.5",
     "fastify": "^4.28.0",
     "@fastify/cors": "^9.0.0",
-    "@fastify/static": "^7.0.0",
     "@fastify/rate-limit": "^9.0.0",
     "pg": "^8.12.0"
   }

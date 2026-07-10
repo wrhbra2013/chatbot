@@ -1,60 +1,1069 @@
-#!/bin/sh
+#!/bin/bash
 set -eu
 
 # ==============================================================
-# Script de instalação — API E-commerce (Docker)
-# Uso: sudo bash deploy.sh          (instalar)
-#       sudo bash deploy.sh uninstall (desinstalar)
+# Instalador auto-contido — API + Frontend + WhatsApp Bot
+# Cria todos os arquivos via heredoc no diretorio de destino.
+# Uso: sudo bash install_chatbot [uninstall] [diretorio]
 # ==============================================================
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INSTALL_DIR="$SCRIPT_DIR"
-NGINX_CONF="/etc/nginx/sites-available/default"
-PROJECT_NAME="ecommerce"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info()  { printf "${GREEN}[INFO]${NC} %s\n" "$1"; }
 warn()  { printf "${YELLOW}[WARN]${NC} %s\n" "$1" >&2; }
 error() { printf "${RED}[ERRO]${NC} %s\n" "$1" >&2; exit 1; }
 
-[ "$(id -u)" -eq 0 ] || error "Execute como root: sudo bash deploy.sh"
+[ "$(id -u)" -eq 0 ] || error "Execute como root: sudo bash install_chatbot"
 
-uninstall() {
-  echo ""
-  info "===== Iniciando desinstalação ====="
-  echo ""
+# ---- Uninstall ----
+if [ "${1:-}" = "uninstall" ]; then
+  UNINSTALL_DIR="${2:-/var/www/ecommerce}"
+  info "===== Desinstalando $UNINSTALL_DIR ====="
 
-  [ -f "$INSTALL_DIR/.env" ] && . "$INSTALL_DIR/.env" || true
+  [ -d "$UNINSTALL_DIR" ] || error "Diretorio nao encontrado: $UNINSTALL_DIR"
 
-  _dc_cmd="docker compose"
-  docker compose version >/dev/null 2>&1 || _dc_cmd="docker-compose"
-
-  info "[1/4] Parando containers..."
-  $_dc_cmd -f "$INSTALL_DIR/docker-compose.yml" down -v 2>/dev/null && \
-    info "Containers removidos" || warn "Falha ao derrubar containers"
-
-  info "[2/4] Removendo nginx config..."
-  NGINX_LOCATIONS="/etc/nginx/${PROJECT_NAME}-locations.conf"
-  rm -f "$NGINX_LOCATIONS"
-  sed -i "/${PROJECT_NAME}-locations.conf/d" "$NGINX_CONF" 2>/dev/null || true
-  if nginx -t 2>/dev/null; then
-    systemctl reload nginx.service 2>/dev/null && info "Nginx recarregado"
+  # Carrega .env se existir
+  ENV_FILE="$UNINSTALL_DIR/.env"
+  if [ -f "$ENV_FILE" ]; then
+    set -a
+    . "$ENV_FILE"
+    set +a
   fi
 
-  info "[3/4] Removendo imagens..."
-  docker images "${PROJECT_NAME}-api:latest" -q 2>/dev/null | xargs -r docker rmi 2>/dev/null || true
+  APP_PORT=${APP_PORT:-3000}
+  DB_NAME=${DB_NAME:-ecommerce_db}
+  DB_USER=${DB_USER:-postgres}
+  DB_PASS=${DB_PASS:-postgres}
+  PROJECT_NAME=$(basename "$UNINSTALL_DIR")
+  CONTAINER_DB="${PROJECT_NAME}-db-1"
 
-  info "[4/4] Concluído!"
+  # Drop database e tabelas (container ainda rodando)
+  if command -v docker >/dev/null 2>&1; then
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER_DB"; then
+      info "Removendo database e tabelas do PostgreSQL..."
+      docker exec "$CONTAINER_DB" psql -U "$DB_USER" -d postgres -c \
+        "DROP DATABASE IF EXISTS \"$DB_NAME\" WITH (FORCE);" 2>/dev/null || true
+    fi
+  fi
+
+  # Derruba containers
+  if command -v docker >/dev/null 2>&1; then
+    COMPOSE_FILE="$UNINSTALL_DIR/docker-compose.yml"
+    if [ -f "$COMPOSE_FILE" ]; then
+      info "Derrubando containers..."
+      docker compose -f "$COMPOSE_FILE" --project-name "$PROJECT_NAME" down --volumes 2>/dev/null || \
+      docker-compose -f "$COMPOSE_FILE" --project-name "$PROJECT_NAME" down --volumes 2>/dev/null || true
+    fi
+  fi
+
+  # Mata processo na porta
+  if command -v lsof >/dev/null 2>&1; then
+    PID=$(lsof -ti tcp:"$APP_PORT" 2>/dev/null || true)
+    if [ -n "$PID" ]; then
+      info "Liberando porta $APP_PORT (PID $PID)..."
+      kill -9 "$PID" 2>/dev/null || true
+    fi
+  fi
+
+  # Remove config nginx
+  NGINX_LOCATIONS="/etc/nginx/${PROJECT_NAME}-locations.conf"
+  if [ -f "$NGINX_LOCATIONS" ]; then
+    info "Removendo config nginx..."
+    rm -f "$NGINX_LOCATIONS"
+    if [ -f /etc/nginx/sites-available/default ]; then
+      sed -i "\|include ${NGINX_LOCATIONS};|d" /etc/nginx/sites-available/default
+    fi
+    nginx -t 2>/dev/null && systemctl reload nginx.service 2>/dev/null || true
+  fi
+
+  # Remove diretorio
+  info "Removendo $UNINSTALL_DIR..."
+  rm -rf "$UNINSTALL_DIR"
+
+  info "Desinstalacao concluida!"
+  exit 0
+fi
+
+echo ""
+info "===== Instalacao do Catalogo WhatsApp (Docker) ====="
+echo ""
+
+# Inputs
+DEFAULT_DIR="/var/www/ecommerce"
+printf "Diretorio de instalacao [${DEFAULT_DIR}]: "; read -r INSTALL_DIR
+INSTALL_DIR=${INSTALL_DIR:-$DEFAULT_DIR}
+
+printf "Porta do app (host) [3000]: "; read -r APP_PORT
+APP_PORT=${APP_PORT:-3000}
+
+printf "Nome do banco [ecommerce_db]: "; read -r DB_NAME
+DB_NAME=${DB_NAME:-ecommerce_db}
+
+printf "Dominio/Nginx path (ex: /ecommerce) [/]: "; read -r NGINX_PATH
+NGINX_PATH=${NGINX_PATH:-/}
+
+printf "Dominio externo (ex: api.projetosdinamicos.com.br) [api.projetosdinamicos.com.br]: "; read -r EXTERNAL_DOMAIN
+EXTERNAL_DOMAIN=${EXTERNAL_DOMAIN:-api.projetosdinamicos.com.br}
+
+PROJECT_NAME=$(basename "$INSTALL_DIR")
+
+DB_USER=postgres
+DB_PASS=$(openssl rand -hex 16)
+API_TOKEN=$(openssl rand -hex 32)
+
+mkdir -p "$INSTALL_DIR/api/src" "$INSTALL_DIR/static/css" "$INSTALL_DIR/static/js" "$INSTALL_DIR/data"
+
+# ==============================================================
+# ARQUIVOS VIA HEREDOC
+# ==============================================================
+
+  info "Criando docker-compose.yml..."
+cat > "$INSTALL_DIR/docker-compose.yml" << DOCKERCOMPOSE
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  api:
+    build: api/
+    ports:
+      - "127.0.0.1:${APP_PORT}:${APP_PORT}"
+    environment:
+      PORT: ${APP_PORT}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASS}
+      API_TOKEN: ${API_TOKEN}
+    volumes:
+      - ${INSTALL_DIR}/data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: unless-stopped
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  pgdata:
+DOCKERCOMPOSE
+
+info "Criando api/Dockerfile..."
+cat > "$INSTALL_DIR/api/Dockerfile" << DOCKERFILE
+FROM node:20-alpine
+WORKDIR /app
+COPY package.json ./
+RUN npm install --production
+COPY src/ ./src/
+EXPOSE 3000
+CMD ["node", "src/server.js"]
+DOCKERFILE
+
+info "Criando api/package.json..."
+cat > "$INSTALL_DIR/api/package.json" << PKGJSON
+{
+  "name": "ecommerce-api",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.0",
+    "@fastify/cors": "^9.0.0",
+    "@fastify/rate-limit": "^9.0.0",
+    "pg": "^8.12.0"
+  }
+}
+PKGJSON
+
+info "Criando .env..."
+cat > "$INSTALL_DIR/.env" << ENVEOF
+PORT=${APP_PORT}
+DB_NAME=${DB_NAME}
+DB_USER=${DB_USER}
+DB_PASS=${DB_PASS}
+API_TOKEN=${API_TOKEN}
+EXTERNAL_DOMAIN=${EXTERNAL_DOMAIN}
+NGINX_PATH=${NGINX_PATH}
+ENVEOF
+chmod 600 "$INSTALL_DIR/.env"
+
+info "Criando api/src/server.js..."
+cat > "$INSTALL_DIR/api/src/server.js" << 'SRVEOF'
+import Fastify from 'fastify';
+import cors from '@fastify/cors';
+import rateLimit from '@fastify/rate-limit';
+import pg from 'pg';
+import 'dotenv/config';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
+import crypto from 'crypto';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+const { Pool } = pg;
+
+const fastify = Fastify({ logger: true });
+
+const pool = new Pool({
+  host: process.env.DB_HOST || 'localhost',
+  port: parseInt(process.env.DB_PORT || '5432'),
+  user: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASS || 'postgres',
+  database: process.env.DB_NAME || 'ecommerce_db',
+});
+
+pool.on('error', (err) => console.error('DB Error:', err));
+
+const API_TOKEN = process.env.API_TOKEN || 'ecommerce-api-token';
+const API_WRITE_KEY = process.env.API_WRITE_KEY || API_TOKEN;
+
+await fastify.register(cors, {
+  origin: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Write-Key'],
+});
+
+await fastify.register(rateLimit, {
+  max: 100,
+  timeWindow: '1 minute',
+  keyGenerator: (req) => req.ip,
+});
+
+function validateTableName(table) {
+  return /^[a-z_][a-z0-9_]{0,63}$/.test(table);
+}
+function validateId(id) {
+  return /^[a-zA-Z0-9_-]{1,128}$/.test(id);
 }
 
-case "${1:-}" in
-  uninstall) uninstall; exit 0 ;;
-esac
+async function query(sql, params = []) {
+  const client = await pool.connect();
+  try {
+    return await client.query(sql, params);
+  } finally {
+    client.release();
+  }
+}
 
-echo ""
-info "===== Instalação do E-commerce API (Docker) ====="
-echo ""
+const authMiddleware = async (req, reply) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token || token !== API_TOKEN) {
+    reply.code(401).send({ success: false, error: 'Unauthorized' });
+    return;
+  }
+};
 
-info "Verificando Docker..."
+const writeAuthMiddleware = async (req, reply) => {
+  const writeKey = req.headers['x-write-key'];
+  const authToken = req.headers.authorization?.replace('Bearer ', '');
+
+  if (!writeKey && !authToken) {
+    reply.code(403).send({ success: false, error: 'Write access denied' });
+    return;
+  }
+
+  if (writeKey && writeKey !== API_WRITE_KEY) {
+    reply.code(403).send({ success: false, error: 'Invalid write key' });
+    return;
+  }
+
+  if (authToken && authToken !== API_TOKEN) {
+    reply.code(403).send({ success: false, error: 'Invalid token' });
+    return;
+  }
+};
+
+fastify.get('/health', async () => {
+  try {
+    await pool.query('SELECT 1');
+    return { status: 'healthy', database: 'connected', timestamp: new Date().toISOString() };
+  } catch (err) {
+    return { status: 'unhealthy', database: 'disconnected', error: err.message };
+  }
+});
+
+fastify.get('/ping', async () => ({ pong: true }));
+
+let botStatus = { qr: null, connected: false };
+
+fastify.get('/api/qrcode', async () => botStatus);
+
+fastify.post('/api/qrcode', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  const { qr, connected } = req.body || {};
+  if (qr !== undefined) botStatus.qr = qr;
+  if (connected !== undefined) botStatus.connected = connected;
+  return { success: true };
+});
+
+fastify.get('/data/:table', async (req, res) => {
+  const { table } = req.params;
+  if (!validateTableName(table)) {
+    return res.code(400).send({ error: 'Invalid table name' });
+  }
+  try {
+    const result = await query(`SELECT * FROM "${table}" ORDER BY created_at DESC LIMIT 500`);
+    return res.code(200).send(result.rows);
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.get('/config/:chave', async (req, res) => {
+  const { chave } = req.params;
+  try {
+    const result = await query('SELECT valor FROM configuracoes WHERE chave = $1', [chave]);
+    if (!result.rows.length) {
+      return res.code(200).send({ data: null });
+    }
+    try {
+      return res.code(200).send({ data: JSON.parse(result.rows[0].valor) });
+    } catch {
+      return res.code(200).send({ data: result.rows[0].valor });
+    }
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.post('/api/config/set', { preHandler: authMiddleware }, async (req, res) => {
+  const { chave, valor } = req.body || {};
+  if (!chave) {
+    return res.code(400).send({ error: 'Chave requerida' });
+  }
+  const valorJson = typeof valor === 'object' ? JSON.stringify(valor) : valor;
+  try {
+    const result = await query(
+      "INSERT INTO configuracoes (id, chave, valor, updated_at) VALUES (gen_random_uuid(), $1, $2, NOW()) ON CONFLICT (chave) DO UPDATE SET valor = $2, updated_at = NOW() RETURNING *",
+      [chave, valorJson]
+    );
+    return { success: true, data: result.rows[0] };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.post('/api/read', { preHandler: authMiddleware }, async (req, res) => {
+  const { table, filters = {}, columns = ['*'], order_by = 'created_at', order_dir = 'DESC', limit = 100, offset = 0 } = req.body || {};
+  if (!validateTableName(table)) {
+    return res.code(400).send({ error: 'Invalid request' });
+  }
+  if (!validateTableName(order_by)) {
+    return res.code(400).send({ error: 'Invalid order_by' });
+  }
+  const colList = (!columns || (Array.isArray(columns) && columns.length === 1 && columns[0] === '*'))
+    ? '*' : columns.map(c => '"' + c + '"').join(', ');
+
+  const entries = Object.entries(filters);
+  const conditions = entries.map(([k], i) => {
+    if (!validateTableName(k)) return null;
+    return Array.isArray(filters[k])
+      ? '"' + k + '" IN (' + filters[k].map((_, j) => '$' + (i + j + 1)).join(',') + ')'
+      : '"' + k + '" = $' + (i + 1);
+  }).filter(Boolean).join(' AND ');
+  const params = Object.values(filters).flat();
+  const lim = Math.min(parseInt(limit) || 100, 1000);
+
+  try {
+    const [countRes, dataRes] = await Promise.all([
+      query('SELECT COUNT(*) FROM "' + table + '"' + (conditions ? ' WHERE ' + conditions : ''), params),
+      query('SELECT ' + colList + ' FROM "' + table + '"' + (conditions ? ' WHERE ' + conditions : '')
+        + ' ORDER BY "' + order_by + '" ' + (order_dir.toUpperCase() === 'ASC' ? 'ASC' : 'DESC')
+        + ' LIMIT ' + lim + ' OFFSET ' + offset, params),
+    ]);
+
+    return {
+      data: dataRes.rows,
+      pagination: { total: parseInt(countRes.rows[0].count), limit: lim, offset },
+    };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.post('/api/create', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  const { table, data } = req.body || {};
+  if (!validateTableName(table) || !data) {
+    return res.code(400).send({ error: 'Invalid request' });
+  }
+  const sanitized = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (validateTableName(k)) sanitized[k] = v;
+  }
+  sanitized.id = sanitized.id || crypto.randomUUID();
+  sanitized.created_at = sanitized.created_at || new Date().toISOString();
+  const cols = Object.keys(sanitized).map(c => '"' + c + '"').join(', ');
+  const vals = Object.keys(sanitized).map((_, i) => '$' + (i + 1)).join(', ');
+  try {
+    const result = await query(
+      'INSERT INTO "' + table + '" (' + cols + ') VALUES (' + vals + ') RETURNING *',
+      Object.values(sanitized)
+    );
+    return { success: true, data: result.rows[0] };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.post('/api/update', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  const { table, id, data } = req.body || {};
+  if (!validateTableName(table) || !validateId(id) || !data) {
+    return res.code(400).send({ error: 'Invalid request' });
+  }
+  const sanitized = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (validateTableName(k) && !['id', 'created_at'].includes(k)) sanitized[k] = v;
+  }
+  if (!Object.keys(sanitized).length) return res.code(400).send({ error: 'No valid fields' });
+  const sets = Object.keys(sanitized).map((k, i) => '"' + k + '" = $' + (i + 1)).join(', ');
+  try {
+    const result = await query(
+      'UPDATE "' + table + '" SET ' + sets + ' WHERE id = $' + (Object.keys(sanitized).length + 1) + ' RETURNING *',
+      [...Object.values(sanitized), id]
+    );
+    if (!result.rows.length) return res.code(404).send({ error: 'Not found' });
+    return { success: true, data: result.rows[0] };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.post('/api/delete', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  const { table, id } = req.body || {};
+  if (!validateTableName(table) || !validateId(id)) {
+    return res.code(400).send({ error: 'Invalid request' });
+  }
+  try {
+    const result = await query('DELETE FROM "' + table + '" WHERE id = $1 RETURNING id', [id]);
+    if (!result.rows.length) return res.code(404).send({ error: 'Not found' });
+    return { success: true, deleted: true, id };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.post('/api/table/create', { preHandler: authMiddleware }, async (req, res) => {
+  const { table_name, columns } = req.body || {};
+  if (!table_name || !columns) {
+    return res.code(400).send({ error: 'Invalid request' });
+  }
+  if (!validateTableName(table_name)) {
+    return res.code(400).send({ error: 'Invalid table name' });
+  }
+  try {
+    await query('CREATE TABLE IF NOT EXISTS "' + table_name + '" (' + columns + ')');
+    return { success: true, table: table_name };
+  } catch (e) {
+    return res.code(400).send({ error: e.message });
+  }
+});
+
+fastify.get('/api/produtos', async (req, res) => {
+  const { categoria, search, limit = 50, offset = 0 } = req.query;
+  try {
+    let sql = 'SELECT * FROM "produtos" WHERE ativo = true';
+    const params = [];
+    if (categoria) {
+      params.push(categoria);
+      sql += ' AND categoria = $' + params.length;
+    }
+    if (search) {
+      params.push('%' + search + '%');
+      sql += ' AND (nome ILIKE $' + params.length + ' OR descricao ILIKE $' + params.length + ')';
+    }
+    sql += ' ORDER BY created_at DESC LIMIT ' + parseInt(limit) + ' OFFSET ' + parseInt(offset);
+    const result = await query(sql, params);
+    return { success: true, data: result.rows, total: result.rows.length };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.get('/api/produtos/:id', async (req, res) => {
+  try {
+    const result = await query('SELECT * FROM "produtos" WHERE id = $1', [req.params.id]);
+    if (!result.rows.length) return res.code(404).send({ error: 'Produto nao encontrado' });
+    return { success: true, data: result.rows[0] };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.post('/api/produtos', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  const { id, nome, descricao, preco, categoria, imagem, estoque } = req.body || {};
+  if (!nome || preco === undefined || !categoria) {
+    return res.code(400).send({ error: 'nome, preco e categoria sao obrigatorios' });
+  }
+  const productId = id || crypto.randomUUID().split('-')[0];
+  try {
+    const result = await query(
+      'INSERT INTO "produtos" (id, nome, descricao, preco, categoria, imagem, estoque) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO UPDATE SET nome = $2, descricao = $3, preco = $4, categoria = $5, imagem = $6, estoque = $7 RETURNING *',
+      [productId, nome, descricao || '', parseFloat(preco), categoria, imagem || '', parseInt(estoque) || 0]
+    );
+    return { success: true, data: result.rows[0] };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.put('/api/produtos/:id', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  const { nome, descricao, preco, categoria, imagem, estoque, ativo } = req.body || {};
+  try {
+    const sets = [];
+    const params = [];
+    if (nome !== undefined) { sets.push('nome = $' + (params.length + 1)); params.push(nome); }
+    if (descricao !== undefined) { sets.push('descricao = $' + (params.length + 1)); params.push(descricao); }
+    if (preco !== undefined) { sets.push('preco = $' + (params.length + 1)); params.push(parseFloat(preco)); }
+    if (categoria !== undefined) { sets.push('categoria = $' + (params.length + 1)); params.push(categoria); }
+    if (imagem !== undefined) { sets.push('imagem = $' + (params.length + 1)); params.push(imagem); }
+    if (estoque !== undefined) { sets.push('estoque = $' + (params.length + 1)); params.push(parseInt(estoque)); }
+    if (ativo !== undefined) { sets.push('ativo = $' + (params.length + 1)); params.push(ativo); }
+    if (!sets.length) return res.code(400).send({ error: 'Nenhum campo para atualizar' });
+    params.push(req.params.id);
+    const result = await query(
+      'UPDATE "produtos" SET ' + sets.join(', ') + ', updated_at = NOW() WHERE id = $' + params.length + ' RETURNING *',
+      params
+    );
+    if (!result.rows.length) return res.code(404).send({ error: 'Produto nao encontrado' });
+    return { success: true, data: result.rows[0] };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.delete('/api/produtos/:id', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  try {
+    const result = await query('DELETE FROM "produtos" WHERE id = $1 RETURNING id', [req.params.id]);
+    if (!result.rows.length) return res.code(404).send({ error: 'Produto nao encontrado' });
+    return { success: true, deleted: true, id: req.params.id };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+fastify.post('/api/produtos/seed', { preHandler: writeAuthMiddleware }, async (req, res) => {
+  try {
+    const filePath = path.join(PROJECT_ROOT, 'data', 'produtos.json');
+    if (!fs.existsSync(filePath)) return res.code(404).send({ error: 'Arquivo produtos.json nao encontrado' });
+    const raw = JSON.parse(await fs.promises.readFile(filePath, 'utf-8'));
+    let count = 0;
+    for (const [categoria, items] of Object.entries(raw)) {
+      for (const item of items) {
+        await query(
+          'INSERT INTO "produtos" (id, nome, descricao, preco, categoria, imagem, estoque) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING',
+          [item.id, item.nome, item.descricao || '', parseFloat(item.preco), categoria, item.imagem || '', parseInt(item.estoque) || 0]
+        );
+        count++;
+      }
+    }
+    return { success: true, message: count + ' produtos importados' };
+  } catch (err) {
+    return res.code(500).send({ error: err.message });
+  }
+});
+
+const TABLES = [
+  { name: 'produtos', columns: 'id TEXT PRIMARY KEY, nome TEXT, descricao TEXT, preco DECIMAL(10,2), categoria TEXT, imagem TEXT, estoque INTEGER DEFAULT 0, ativo BOOLEAN DEFAULT true, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
+  { name: 'clientes', columns: 'id TEXT PRIMARY KEY, nome TEXT, telefone TEXT, endereco TEXT, cidade TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
+  { name: 'carrinhos', columns: 'id UUID PRIMARY KEY, cliente_id TEXT, cliente_nome TEXT, itens JSONB DEFAULT \'[]\'::jsonb, total DECIMAL(10,2) DEFAULT 0, status TEXT DEFAULT \'ativo\', created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
+  { name: 'pedidos', columns: 'id UUID PRIMARY KEY, cliente_id TEXT, cliente_nome TEXT, cliente_telefone TEXT, itens JSONB DEFAULT \'[]\'::jsonb, total DECIMAL(10,2), status TEXT DEFAULT \'pendente\', forma_pagamento TEXT, observacoes TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()' },
+  { name: 'contatos', columns: 'id UUID PRIMARY KEY, nome TEXT, email TEXT, telefone TEXT, mensagem TEXT, lido BOOLEAN DEFAULT false, created_at TIMESTAMP DEFAULT NOW()' },
+  { name: 'configuracoes', columns: 'id UUID PRIMARY KEY DEFAULT gen_random_uuid(), chave TEXT UNIQUE, valor TEXT, updated_at TIMESTAMP DEFAULT NOW()' },
+];
+
+async function initDB() {
+  for (const table of TABLES) {
+    try {
+      await query('CREATE TABLE IF NOT EXISTS "' + table.name + '" (' + table.columns + ')');
+      console.log('Tabela "' + table.name + '" verificada/criada');
+    } catch (e) {
+      console.error('Erro ao criar tabela "' + table.name + '":', e.message);
+    }
+  }
+}
+
+const start = async () => {
+  await initDB();
+  const PORT = process.env.PORT || 3000;
+  await fastify.listen({ port: PORT, host: '0.0.0.0' });
+  console.log('Server: http://0.0.0.0:' + PORT);
+};
+
+start();
+SRVEOF
+
+info "Criando data/produtos.json..."
+cat > "$INSTALL_DIR/data/produtos.json" << PRODJSON
+{
+  "eletronicos": [
+    { "id": "fone1", "nome": "Fone Bluetooth X100", "preco": 89.90, "descricao": "Fone sem fio com cancelamento de ruido, bateria 40h", "imagem": "https://picsum.photos/seed/fone1/400/400", "estoque": 15 },
+    { "id": "carregador1", "nome": "Carregador Turbo 65W", "preco": 129.90, "descricao": "Carregador rapido USB-C para notebooks e celulares", "imagem": "https://picsum.photos/seed/carregador1/400/400", "estoque": 20 },
+    { "id": "caixa1", "nome": "Caixa de Som Portatil", "preco": 159.90, "descricao": "Bluetooth 5.3, a prova d'agua, 20W de potencia", "imagem": "https://picsum.photos/seed/caixa1/400/400", "estoque": 10 }
+  ],
+  "moda": [
+    { "id": "camisa1", "nome": "Camisa Polo Premium", "preco": 79.90, "descricao": "Algodao egipcio, disponivel em 5 cores", "imagem": "https://picsum.photos/seed/camisa1/400/400", "estoque": 25 },
+    { "id": "tenis1", "nome": "Tenis Esportivo Air", "preco": 249.90, "descricao": "Tenis leve com amortecimento, tamanhos 38-44", "imagem": "https://picsum.photos/seed/tenis1/400/400", "estoque": 8 },
+    { "id": "mochila1", "nome": "Mochila Executiva 45L", "preco": 199.90, "descricao": "Couro sintetico, compartimento para notebook 17\"", "imagem": "https://picsum.photos/seed/mochila1/400/400", "estoque": 12 }
+  ],
+  "casa": [
+    { "id": "lampada1", "nome": "Lampada Inteligente RGB", "preco": 49.90, "descricao": "Wi-Fi, compativel com Alexa e Google Home", "imagem": "https://picsum.photos/seed/lampada1/400/400", "estoque": 30 },
+    { "id": "cadeira1", "nome": "Cadeira Gamer Pro", "preco": 899.90, "descricao": "Reclinavel 180, apoio lombar, couro premium", "imagem": "https://picsum.photos/seed/cadeira1/400/400", "estoque": 5 },
+    { "id": "vaso1", "nome": "Vaso Decorativo 30cm", "preco": 39.90, "descricao": "Ceramica artesanal, acabamento fosco", "imagem": "https://picsum.photos/seed/vaso1/400/400", "estoque": 18 }
+  ]
+}
+PRODJSON
+
+info "Criando paginas/index.html..."
+cat > "$INSTALL_DIR/index.html" << INDEXHTML
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chatbot - Produtos via WhatsApp</title>
+    <link rel="icon" type="image/png" href="static/icon/favicon.ico">
+    <link rel="stylesheet" href="static/css/style.css?v=1.0.0">
+    <script>var API_BASE = '__API_BASE__';</script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body>
+    <div id="banner-comercial"></div>
+    <div id="header-placeholder"></div>
+    <main class="main-content">
+        <div class="container">
+            <section class="section">
+                <div id="whatsapp-status" class="card text-center" style="max-width:400px;margin:0 auto 2rem;">
+                    <div id="qr-status-loading"><p style="color:#888;">Iniciando conexao com WhatsApp...</p></div>
+                    <div id="qr-status-connected" style="display:none;">
+                        <div style="font-size:3rem;margin-bottom:0.5rem;">✅</div>
+                        <h3 style="color:#28a745;">WhatsApp Conectado</h3>
+                        <p style="color:#666;">O bot esta pronto para receber pedidos.</p>
+                    </div>
+                    <div id="qr-status-scan" style="display:none;">
+                        <h3>📱 Acesse pelo WhatsApp</h3>
+                        <p style="color:#555;margin-bottom:1rem;">Escaneie o QR code abaixo com o WhatsApp do seu celular:</p>
+                        <div id="qrcode-container" style="display:inline-block;padding:1rem;background:#fff;border-radius:12px;"></div>
+                        <p style="color:#888;font-size:0.85rem;margin-top:1rem;">Abra o WhatsApp > Menu > WhatsApp Web</p>
+                    </div>
+                </div>
+            </section>
+            <section class="section text-center">
+                <div class="card" style="max-width:500px;margin:0 auto;">
+                    <h3>📱 Como Funciona</h3>
+                    <ol style="text-align:left;">
+                        <li>Abra o WhatsApp e escaneie o QR code acima</li>
+                        <li>Envie <strong>1</strong> para ver produtos</li>
+                        <li>Envie <strong>comprar &lt;id&gt;</strong> para adicionar ao carrinho</li>
+                        <li>Envie <strong>4</strong> para finalizar o pedido</li>
+                    </ol>
+                    <p style="margin-top:1rem;font-size:0.9rem;color:#666;">Menu: <em>1</em> Produtos | <em>2</em> Carrinho | <em>3</em> Cadastro | <em>4</em> Finalizar | <em>5</em> Limpar</p>
+                </div>
+            </section>
+        </div>
+    </main>
+    <div id="footer-placeholder"></div>
+    <script src="static/js/components.js?v=1.0.0"></script>
+    <script>
+        function atualizarQR() {
+            fetch(API_BASE + '/api/qrcode').then(function(r) { return r.json(); }).then(function(status) {
+                var loading = document.getElementById('qr-status-loading');
+                var connected = document.getElementById('qr-status-connected');
+                var scan = document.getElementById('qr-status-scan');
+                if (status.connected) { loading.style.display = 'none'; scan.style.display = 'none'; connected.style.display = 'block'; return; }
+                if (status.qr) {
+                    loading.style.display = 'none'; connected.style.display = 'none'; scan.style.display = 'block';
+                    var container = document.getElementById('qrcode-container'); container.innerHTML = '';
+                    new QRCode(container, { text: status.qr, width: 256, height: 256, colorDark: '#2a254b', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.H });
+                } else { loading.style.display = 'block'; scan.style.display = 'none'; connected.style.display = 'none'; }
+            }).catch(function() {});
+        }
+        atualizarQR(); setInterval(atualizarQR, 3000);
+    </script>
+</body>
+</html>
+INDEXHTML
+
+info "Criando static/js/components.js..."
+cat > "$INSTALL_DIR/static/js/components.js" << COMPJS
+function initComponents() {
+    var headerHTML = '<header class="header"><div class="header-container"><a href="index.html" class="header-title"><span class="site-title">Chatbot WhatsApp</span></a><input type="checkbox" id="menu-toggle" class="menu-checkbox"><label for="menu-toggle" class="sandwich-button" aria-label="Abrir menu"><span></span><span></span><span></span></label></div><nav id="main-navigation" class="main-nav"><ul class="menu"><li class="nav-item"><a class="nav-link" href="index.html">Inicio</a></li></ul></nav></header><div class="mobile-overlay" id="mobile-overlay"></div>';
+    var footerHTML = '<footer class="footer"><p>&copy; 2026 Chatbot WhatsApp. Todos os direitos reservados.</p></footer>';
+    document.getElementById('header-placeholder').innerHTML = headerHTML;
+    document.getElementById('footer-placeholder').innerHTML = footerHTML;
+    var menuToggle = document.getElementById('menu-toggle');
+    var mainNav = document.getElementById('main-navigation');
+    var mobileOverlay = document.getElementById('mobile-overlay');
+    if (!menuToggle || !mainNav) return;
+    function syncMenuState() {
+        var isChecked = menuToggle.checked;
+        if (isChecked) { mainNav.classList.add('is-active'); if (mobileOverlay) mobileOverlay.classList.add('is-active'); }
+        else { mainNav.classList.remove('is-active'); if (mobileOverlay) mobileOverlay.classList.remove('is-active'); }
+    }
+    menuToggle.addEventListener('change', syncMenuState);
+    if (mobileOverlay) { mobileOverlay.addEventListener('click', function() { menuToggle.checked = false; syncMenuState(); }); }
+    document.querySelectorAll('.nav-link').forEach(function(link) { link.addEventListener('click', function() { if (window.innerWidth <= 768) { menuToggle.checked = false; syncMenuState(); } }); });
+}
+document.addEventListener('DOMContentLoaded', initComponents);
+COMPJS
+
+info "Criando static/css/style.css..."
+cat > "$INSTALL_DIR/static/css/style.css" << CSS
+:root { --cor-principal: #6C63FF; --cor-accent: #00BFA6; --cor-titulo: #2a254b; --cor-texto: #0f1724; --cor-texto-claro: #ffffff; --cor-fundo: #f7f8fc; --cor-borda: #e6e9f2; --cor-header-footer: #6C63FF; --sombra-suave: 0 6px 18px rgba(15, 20, 32, 0.06); --fonte-principal: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; scroll-behavior: smooth; }
+body { font-family: var(--fonte-principal); line-height: 1.6; background-color: var(--cor-fundo); color: var(--cor-texto); }
+a { color: var(--cor-principal); text-decoration: none; transition: color 0.2s ease-in-out; }
+a:hover { text-decoration: underline; }
+h1, h2, h3 { line-height: 1.2; margin-bottom: 1rem; color: var(--cor-titulo); }
+img { max-width: 100%; height: auto; }
+.container { max-width: 1100px; margin: 0 auto; padding: 1rem 2rem; }
+.main-content { padding: 2rem 0; min-height: calc(100vh - 140px); }
+.header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; padding: 0.75rem 2rem; background-color: var(--cor-header-footer); color: var(--cor-texto-claro); position: sticky; top: 0; z-index: 100; }
+.header-container { display: flex; justify-content: space-between; align-items: center; width: 100%; }
+.header-title { display: flex; align-items: center; text-decoration: none; color: var(--cor-texto-claro); }
+.site-title { font-size: 1.5rem; font-weight: bold; color: var(--cor-texto-claro); }
+.main-nav { display: flex; align-items: center; flex: 1; justify-content: flex-end; }
+.main-nav .menu { display: flex; list-style: none; margin: 0; padding: 0; gap: 0.5rem; }
+.main-nav .menu > .nav-item > a { display: block; text-decoration: none; border-radius: 8px; padding: 0.5rem 1rem; color: var(--cor-texto-claro); transition: background-color 0.2s, color 0.2s; font-weight: 500; }
+.main-nav .menu > .nav-item > a:hover { background-color: rgba(255,255,255,0.2); text-decoration: none; }
+.menu-checkbox { display: none; }
+.sandwich-button { display: none; flex-direction: column; justify-content: center; align-items: center; position: relative; background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.3); cursor: pointer; padding: 10px; z-index: 1002; border-radius: 8px; width: 48px; height: 48px; transition: background-color 0.3s, border-color 0.3s; }
+.sandwich-button:hover { background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.5); }
+.sandwich-button span { display: block; width: 22px; height: 3px; background-color: var(--cor-texto-claro); margin: 5px 0; transition: 0.3s; border-radius: 2px; }
+.menu-checkbox:checked + .sandwich-button span:nth-child(1) { transform: translateY(8px) rotate(45deg); }
+.menu-checkbox:checked + .sandwich-button span:nth-child(2) { opacity: 0; transform: scaleX(0); }
+.menu-checkbox:checked + .sandwich-button span:nth-child(3) { transform: translateY(-8px) rotate(-45deg); }
+.mobile-overlay { position: fixed; inset: 0; background: rgba(19, 20, 20, 0.52); opacity: 0; visibility: hidden; transition: opacity 0.25s ease, visibility 0.25s; z-index: 999; cursor: pointer; }
+.mobile-overlay.is-active { opacity: 1; visibility: visible; }
+.main-nav.is-active { transform: translateX(0); }
+@media (max-width: 768px) { .sandwich-button { display: flex; } .main-nav { position: fixed; top: 0; right: 0; width: 280px; height: 100vh; background: var(--cor-header-footer); flex-direction: column; justify-content: center; transform: translateX(100%); transition: transform 0.3s ease; z-index: 1000; padding-top: 60px; } .main-nav .menu { flex-direction: column; gap: 0; } .main-nav .menu > .nav-item > a { padding: 1rem; } .site-title { font-size: 1.2rem; } .container { padding: 1rem; } .header { padding: 0.75rem 1rem; } .produtos-grid { grid-template-columns: 1fr; } }
+.footer { display: flex; justify-content: center; align-items: center; padding: 2rem; margin-top: 2rem; background-color: var(--cor-header-footer); color: var(--cor-texto-claro); }
+.section-title { text-align: center; font-size: 2rem; margin-bottom: 2rem; }
+.section { margin-bottom: 3rem; }
+.intro-section { text-align: center; padding: 3rem 0; }
+.intro-section h2 { font-size: 2.5rem; margin-bottom: 1rem; }
+.intro-section p { font-size: 1.1rem; color: #555; max-width: 600px; margin: 0 auto 1.5rem; }
+.btn { display: inline-block; padding: 0.75rem 2rem; background-color: var(--cor-principal); color: var(--cor-texto-claro); border: none; border-radius: 8px; font-size: 1rem; font-weight: bold; cursor: pointer; transition: background-color 0.2s, transform 0.2s; text-decoration: none; }
+.btn:hover { background-color: #5a52e0; transform: scale(1.05); text-decoration: none; }
+.btn-sm { padding: 0.5rem 1rem; font-size: 0.9rem; }
+.btn-danger { background-color: #dc3545; }
+.btn-danger:hover { background-color: #c82333; }
+.btn-success { background-color: #28a745; }
+.btn-success:hover { background-color: #218838; }
+.btn-outline { background: transparent; border: 2px solid var(--cor-principal); color: var(--cor-principal); }
+.btn-outline:hover { background: var(--cor-principal); color: var(--cor-texto-claro); }
+.produtos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 2rem; }
+.produto-card { background: #fff; border: 1px solid var(--cor-borda); border-radius: 12px; overflow: hidden; box-shadow: var(--sombra-suave); transition: transform 0.2s, box-shadow 0.2s; }
+.produto-card:hover { transform: translateY(-5px); box-shadow: 0 8px 25px rgba(0,0,0,0.1); }
+.produto-card .produto-img { width: 100%; height: 200px; object-fit: cover; }
+.produto-card .produto-body { padding: 1.5rem; }
+.produto-card h3 { margin-bottom: 0.5rem; font-size: 1.2rem; }
+.produto-card .preco { font-size: 1.5rem; font-weight: bold; color: var(--cor-principal); margin-bottom: 0.5rem; }
+.produto-card .descricao { color: #666; font-size: 0.95rem; margin-bottom: 1rem; }
+.produto-card .estoque { font-size: 0.85rem; color: #999; margin-bottom: 1rem; }
+.table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: var(--sombra-suave); }
+.table th, .table td { border: 1px solid var(--cor-borda); padding: 0.75rem 1rem; text-align: left; }
+.table th { background-color: #f2f2f2; font-weight: bold; }
+.table-responsive { overflow-x: auto; }
+.form-group { margin-bottom: 1.5rem; }
+.form-group label { display: block; margin-bottom: 0.5rem; font-weight: bold; }
+.form-group input, .form-group textarea, .form-group select { width: 100%; padding: 0.75rem; border: 1px solid var(--cor-borda); border-radius: 8px; font-family: var(--fonte-principal); font-size: 1rem; transition: border-color 0.2s, box-shadow 0.2s; }
+.form-group input:focus, .form-group textarea:focus, .form-group select:focus { outline: none; border-color: var(--cor-principal); box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.2); }
+.card { background: #fff; border: 1px solid var(--cor-borda); border-radius: 12px; padding: 2rem; box-shadow: var(--sombra-suave); margin-bottom: 2rem; }
+.dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; width: 100%; max-width: 900px; margin: 0 auto 2rem; }
+.dashboard-card { background-color: #fff; border: 1px solid var(--cor-borda); border-radius: 12px; padding: 1.5rem; box-shadow: var(--sombra-suave); display: flex; flex-direction: column; }
+.dashboard-card h3 { font-size: 1.1rem; margin-bottom: 1rem; }
+.dashboard-value { font-size: 2.5rem; font-weight: bold; color: var(--cor-principal); margin-bottom: 1rem; flex-grow: 1; }
+.card-link { color: var(--cor-principal); text-decoration: none; font-weight: bold; align-self: flex-start; transition: transform 0.2s ease; }
+.card-link:hover { text-decoration: underline; transform: translateX(4px); }
+.badge { display: inline-block; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: bold; }
+.badge-success { background-color: #d4edda; color: #155724; }
+.badge-warning { background-color: #fff3cd; color: #856404; }
+.badge-danger { background-color: #f8d7da; color: #721c24; }
+.badge-info { background-color: #d1ecf1; color: #0c5460; }
+.carrinho-item { display: flex; align-items: center; justify-content: space-between; padding: 1rem 0; border-bottom: 1px solid var(--cor-borda); }
+.carrinho-item:last-child { border-bottom: none; }
+.carrinho-total { text-align: right; font-size: 1.5rem; font-weight: bold; padding: 1rem 0; color: var(--cor-principal); }
+.modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; justify-content: center; align-items: center; }
+.modal.active { display: flex; }
+.modal-content { background: #fff; padding: 2rem; border-radius: 12px; max-width: 500px; width: 90%; max-height: 80vh; overflow-y: auto; }
+.modal-content h2 { margin-top: 0; }
+.categoria-tag { display: inline-block; padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.85rem; font-weight: bold; background: #e8e5ff; color: var(--cor-principal); margin-bottom: 0.5rem; }
+.alert { padding: 1rem; border-radius: 8px; margin-bottom: 1rem; font-weight: 500; }
+.alert-success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+.alert-danger { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+.alert-warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+.alert-info { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+.text-center { text-align: center; }
+.text-right { text-align: right; }
+.mt-1 { margin-top: 1rem; }
+.mt-2 { margin-top: 2rem; }
+.mb-1 { margin-bottom: 1rem; }
+.mb-2 { margin-bottom: 2rem; }
+.flex { display: flex; }
+.flex-between { display: flex; justify-content: space-between; align-items: center; }
+.gap-1 { gap: 1rem; }
+.cart-count { display: inline-block; background: #ff4757; color: white; border-radius: 50%; padding: 2px 8px; font-size: 0.75rem; font-weight: bold; margin-left: 4px; }
+CSS
+
+# Favicon placeholder
+mkdir -p "$INSTALL_DIR/static/icon"
+touch "$INSTALL_DIR/static/icon/favicon.ico"
+
+info "Criando index.js (bot WhatsApp)..."
+cat > "$INSTALL_DIR/index.js" << 'BOTEOF'
+const { Client, LocalAuth } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
+const API_BASE = process.env.API_URL || 'http://localhost:3000';
+const API_TOKEN = process.env.API_TOKEN || 'ecommerce-api-token';
+const API_WRITE_KEY = process.env.API_WRITE_KEY || API_TOKEN;
+let carrinhosCache = {};
+const userSession = {};
+
+async function api(method, path, body) {
+  const url = API_BASE + path;
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + API_TOKEN },
+  };
+  if (body) { opts.body = JSON.stringify(body); opts.headers['X-Write-Key'] = API_WRITE_KEY; }
+  const res = await fetch(url, opts);
+  return res.json();
+}
+
+function fmt(v) { return 'R$ ' + v.toFixed(2).replace('.', ','); }
+function esc(s) { return String(s).replace(/([*_~`>#+\-=|{}.!])/g, '\\$1'); }
+
+function menuPrincipal(nome) {
+  const saudacao = nome ? 'Ola, ' + esc(nome) + '!' : 'Bem-vindo!';
+  return '🏪 *Menu Principal*\n' + saudacao + '\n\n1. 📦 Ver Produtos\n2. 🛒 Meu Carrinho\n3. 👤 Meu Cadastro\n4. ✅ Finalizar Pedido\n5. 🗑️ Limpar Carrinho\n6. ❓ Ajuda\n\nDigite o numero da opcao desejada.';
+}
+
+async function menuCategorias(num) {
+  try {
+    const resp = await fetch(API_BASE + '/data/produtos');
+    const produtos = await resp.json();
+    const cats = {}; produtos.forEach(p => { if (p.categoria) cats[p.categoria] = true; });
+    const lista = Object.keys(cats).sort();
+    let msg = '📦 *Categorias*\n\n';
+    lista.forEach((c, i) => { msg += (i + 1) + '. ' + c.charAt(0).toUpperCase() + c.slice(1) + '\n'; });
+    msg += '\n0. 🔙 Voltar\n\nDigite o numero da categoria.';
+    userSession[num] = { menu: 'categorias', cats: lista };
+    return msg;
+  } catch (e) { return 'Erro ao carregar categorias.'; }
+}
+
+async function listarProdutos(num, categoria, pagina = 0) {
+  const params = categoria ? '?categoria=' + encodeURIComponent(categoria) + '&limit=10&offset=' + (pagina * 10) : '?limit=10&offset=' + (pagina * 10);
+  try {
+    const result = await api('GET', '/api/produtos' + params);
+    const lista = result.data || [];
+    if (!lista.length) return 'Nenhum produto encontrado' + (categoria ? ' em ' + esc(categoria) : '') + '.';
+    let msg = '*📦 Produtos' + (categoria ? ' - ' + esc(categoria) : '') + '*\n\n';
+    lista.forEach((p, i) => {
+      msg += (pagina * 10 + i + 1) + '. *' + esc(p.nome) + '*\n   ID: ' + p.id + ' | ' + fmt(parseFloat(p.preco));
+      if (p.estoque > 0) msg += ' | Estq: ' + p.estoque;
+      msg += '\n\n';
+    });
+    msg += 'Para comprar: *comprar <id> [qtd]*\nPara detalhes: *detalhe <id>*\n';
+    if (lista.length === 10) msg += '\nProxima pagina: *mais*';
+    msg += '\n\n0. 🔙 Voltar';
+    return msg;
+  } catch (e) { return 'Erro ao buscar produtos.'; }
+}
+
+async function msgCarrinho(num) {
+  const c = carrinhosCache[num] || [];
+  if (!c.length) return '🛒 *Carrinho vazio!*\n\nAdicione produtos com *comprar <id>* ou pelo site.\n\n0. 🔙 Voltar';
+  let total = 0;
+  const linhas = c.map((i, idx) => { total += i.preco * i.qtd; return (idx + 1) + '. ' + esc(i.nome) + ' x' + i.qtd + ' = ' + fmt(i.preco * i.qtd); }).join('\n');
+  return '🛒 *Carrinho*\n\n' + linhas + '\n\n*Total:* ' + fmt(total) + '\n\n4. ✅ Finalizar\n5. 🗑️ Limpar\n\n0. 🔙 Voltar';
+}
+
+async function verCadastro(num) {
+  try { const result = await api('GET', '/api/clientes/' + encodeURIComponent(num)); return result.success ? result.data : null; }
+  catch (e) { return null; }
+}
+
+const client = new Client({ authStrategy: new LocalAuth({ clientId: 'ecommerce-bot' }), puppeteer: { headless: true, executablePath: '/usr/local/bin/ungoogled-chromium', args: ['--no-sandbox', '--disable-gpu'] } });
+
+client.on('qr', async qr => {
+  qrcode.generate(qr, { small: true });
+  try { await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr, connected: false }) }); } catch (e) {}
+});
+client.on('ready', async () => {
+  console.log('Chatbot de e-commerce online!');
+  try { await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr: null, connected: true }) }); } catch (e) {}
+});
+client.on('disconnected', async () => {
+  try { await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr: null, connected: false }) }); } catch (e) {}
+});
+
+client.on('message', async msg => {
+  const num = msg.from;
+  if (!carrinhosCache[num]) carrinhosCache[num] = [];
+  const t = msg.body.trim();
+  const tl = t.toLowerCase();
+
+  if (tl === 'menu' || tl === 'inicio' || tl === 'oi' || tl === 'ola' || tl === '0' || tl === 'voltar') {
+    delete userSession[num];
+    const cliente = await verCadastro(num);
+    return client.sendMessage(num, menuPrincipal(cliente ? cliente.nome : null));
+  }
+
+  if (tl === 'ajuda' || tl === '6') {
+    return client.sendMessage(num, '❓ *Ajuda - Comandos*\n\nMenu numerado:\n1 - Ver produtos\n2 - Carrinho\n3 - Meu cadastro\n4 - Finalizar\n5 - Limpar\n6 - Ajuda\n0 - Voltar\n\nComandos diretos:\n*produtos* - Catalogo\n*comprar <id> [qtd]* - Adicionar\n*detalhe <id>* - Detalhes\n*carrinho* - Ver carrinho\n*finalizar* - Confirmar\n*cadastro* - Meu cadastro\n*menu* - Menu principal');
+  }
+
+  if (tl === 'produtos' || tl === '1') return client.sendMessage(num, await menuCategorias(num));
+  if (tl.startsWith('produtos ')) { const cat = tl.slice(9).trim(); userSession[num] = { menu: 'produtos', categoria: cat }; return client.sendMessage(num, await listarProdutos(num, cat)); }
+
+  if (tl === 'mais') {
+    const sess = userSession[num];
+    if (!sess || sess.menu !== 'produtos') return client.sendMessage(num, 'Use *produtos* primeiro.');
+    sess.pagina = (sess.pagina || 0) + 1;
+    return client.sendMessage(num, await listarProdutos(num, sess.categoria, sess.pagina));
+  }
+
+  if (tl.startsWith('detalhe ')) {
+    const id = tl.slice(8).trim();
+    if (!id) return client.sendMessage(num, 'Use: *detalhe <id>*');
+    try {
+      const result = await api('GET', '/api/produtos/' + encodeURIComponent(id));
+      if (!result.success) return client.sendMessage(num, 'Produto nao encontrado.');
+      const p = result.data;
+      let m = '*📄 ' + esc(p.nome) + '*\n\n';
+      if (p.descricao) m += esc(p.descricao) + '\n\n';
+      m += '*Preco:* ' + fmt(parseFloat(p.preco)) + '\n*Categoria:* ' + esc(p.categoria) + '\n*Estoque:* ' + (p.estoque > 0 ? p.estoque + ' unidades' : 'Indisponivel') + '\n';
+      if (p.imagem) m += '\n🔗 ' + p.imagem + '\n';
+      m += '\nPara comprar: *comprar ' + esc(p.id) + ' [qtd]*';
+      return client.sendMessage(num, m);
+    } catch (e) { return client.sendMessage(num, 'Erro ao buscar detalhes.'); }
+  }
+
+  if (tl.startsWith('comprar ')) {
+    const args = tl.slice(8).trim().split(/\s+/);
+    const idProd = args[0]; const qtd = parseInt(args[1]) || 1;
+    if (!idProd) return client.sendMessage(num, 'Use: *comprar <id> [qtd]*');
+    try {
+      const result = await api('GET', '/api/produtos/' + encodeURIComponent(idProd));
+      if (!result.success) return client.sendMessage(num, 'Produto nao encontrado.');
+      const p = result.data;
+      if (p.estoque < 1) return client.sendMessage(num, 'Produto indisponivel no momento.');
+      const existente = carrinhosCache[num].find(i => i.id === p.id);
+      if (existente) { existente.qtd += qtd; } else { carrinhosCache[num].push({ id: p.id, nome: p.nome, preco: parseFloat(p.preco), qtd, imagem: p.imagem || '', categoria: p.categoria }); }
+      return client.sendMessage(num, '✅ *' + esc(p.nome) + '* x' + qtd + ' adicionado ao carrinho!\nTotal: ' + fmt(carrinhosCache[num].reduce((s, i) => s + i.preco * i.qtd, 0)) + '\n\n1. 📦 Ver mais produtos\n2. 🛒 Ver carrinho\n0. 🔙 Menu principal');
+    } catch (e) { return client.sendMessage(num, 'Erro ao adicionar produto.'); }
+  }
+
+  if (tl === 'carrinho' || tl === 'ver_carrinho' || tl === '2') return client.sendMessage(num, await msgCarrinho(num));
+
+  if (tl === 'cadastro' || tl === '3') {
+    const cliente = await verCadastro(num);
+    if (cliente) return client.sendMessage(num, '👤 *Meu Cadastro*\n\n*Nome:* ' + esc(cliente.nome) + '\n*Telefone:* ' + esc(cliente.telefone) + (cliente.endereco ? '\n*Endereco:* ' + esc(cliente.endereco) : '') + (cliente.cidade ? '\n*Cidade:* ' + esc(cliente.cidade) : '') + '\n\n1. ✏️ Editar nome\n2. ✏️ Editar endereco\n3. ✏️ Editar cidade\n4. ❌ Excluir cadastro\n0. 🔙 Voltar');
+    userSession[num] = { menu: 'cadastro_aguardando_nome' };
+    return client.sendMessage(num, '👤 *Novo Cadastro*\n\nVamos criar seu cadastro! Digite seu *nome completo*:\n\n0. 🔙 Cancelar');
+  }
+
+  if (userSession[num] && userSession[num].menu === 'cadastro_aguardando_nome') {
+    if (t.length < 3) return client.sendMessage(num, 'Nome invalido. Digite seu nome completo ou 0 para cancelar.');
+    userSession[num] = { menu: 'cadastro_aguardando_endereco', nome: t };
+    return client.sendMessage(num, 'Obrigado, ' + esc(t) + '! Agora digite seu *endereco* (rua, numero, bairro):\n\n0. 🔙 Cancelar');
+  }
+
+  if (userSession[num] && userSession[num].menu === 'cadastro_aguardando_endereco') {
+    if (t.length < 5) return client.sendMessage(num, 'Endereco invalido. Digite seu endereco ou 0 para cancelar.');
+    userSession[num] = { menu: 'cadastro_aguardando_cidade', nome: userSession[num].nome, endereco: t };
+    return client.sendMessage(num, 'Agora digite sua *cidade*:\n\n0. 🔙 Cancelar');
+  }
+
+  if (userSession[num] && userSession[num].menu === 'cadastro_aguardando_cidade') {
+    if (t.length < 2) return client.sendMessage(num, 'Cidade invalida. Digite sua cidade ou 0 para cancelar.');
+    const dados = userSession[num];
+    try {
+      const result = await api('POST', '/api/clientes', { id: num, nome: dados.nome, telefone: num.replace('@c.us', ''), endereco: dados.endereco, cidade: t });
+      if (result.success) { delete userSession[num]; return client.sendMessage(num, '✅ *Cadastro realizado!*\n\n*Nome:* ' + esc(dados.nome) + '\n*Endereco:* ' + esc(dados.endereco) + '\n*Cidade:* ' + esc(t) + '\n\n1. 📦 Ver produtos\n0. 🔙 Menu principal'); }
+      else return client.sendMessage(num, 'Erro ao salvar cadastro.');
+    } catch (e) { return client.sendMessage(num, 'Erro ao salvar cadastro.'); }
+  }
+
+  if (userSession[num] && userSession[num].menu === 'editando_nome') {
+    if (t.length < 3) return client.sendMessage(num, 'Nome invalido.');
+    try { await api('PUT', '/api/clientes/' + encodeURIComponent(num), { nome: t }); delete userSession[num]; return client.sendMessage(num, '✅ Nome atualizado!\n\n0. 🔙 Voltar'); } catch (e) { return client.sendMessage(num, 'Erro ao atualizar.'); }
+  }
+
+  if (userSession[num] && userSession[num].menu === 'editando_endereco') {
+    if (t.length < 5) return client.sendMessage(num, 'Endereco invalido.');
+    try { await api('PUT', '/api/clientes/' + encodeURIComponent(num), { endereco: t }); delete userSession[num]; return client.sendMessage(num, '✅ Endereco atualizado!\n\n0. 🔙 Voltar'); } catch (e) { return client.sendMessage(num, 'Erro ao atualizar.'); }
+  }
+
+  if (userSession[num] && userSession[num].menu === 'editando_cidade') {
+    if (t.length < 2) return client.sendMessage(num, 'Cidade invalida.');
+    try { await api('PUT', '/api/clientes/' + encodeURIComponent(num), { cidade: t }); delete userSession[num]; return client.sendMessage(num, '✅ Cidade atualizada!\n\n0. 🔙 Voltar'); } catch (e) { return client.sendMessage(num, 'Erro ao atualizar.'); }
+  }
+
+  if (userSession[num] && userSession[num].menu === 'confirmar_exclusao') {
+    if (tl === 'sim') { try { await api('DELETE', '/api/clientes/' + encodeURIComponent(num)); delete userSession[num]; return client.sendMessage(num, '✅ Cadastro excluido.\n\n0. 🔙 Menu principal'); } catch (e) { return client.sendMessage(num, 'Erro ao excluir.'); } }
+    else { delete userSession[num]; return client.sendMessage(num, 'Exclusao cancelada.\n\n0. 🔙 Voltar'); }
+  }
+
+  if (tl === 'finalizar' || tl === '4') {
+    const c = carrinhosCache[num];
+    if (!c || !c.length) return client.sendMessage(num, 'Carrinho vazio!');
+    const linhas = c.map(i => esc(i.nome) + ' x' + i.qtd + ' = ' + fmt(i.preco * i.qtd)).join('\n');
+    const total = c.reduce((s, i) => s + i.preco * i.qtd, 0);
+    try { await api('POST', '/api/create', { table: 'pedidos', data: { cliente_id: num, cliente_nome: 'Cliente WhatsApp', cliente_telefone: num.replace('@c.us', ''), itens: JSON.stringify(c), total, status: 'pendente', forma_pagamento: 'whatsapp' } }); } catch (e) { console.error('Erro:', e.message); }
+    delete carrinhosCache[num];
+    return client.sendMessage(num, '✅ *Pedido Confirmado!*\n\n' + linhas + '\n\n*Total:* ' + fmt(total) + '\n\nUm atendente entrara em contato.\n\n0. 🔙 Menu principal');
+  }
+
+  if (tl === 'limpar' || tl === '5') { delete carrinhosCache[num]; return client.sendMessage(num, 'Carrinho limpo!\n\n0. 🔙 Menu principal'); }
+
+  if (userSession[num] && userSession[num].menu === 'categorias') {
+    const idx = parseInt(t) - 1;
+    const cat = userSession[num].cats[idx];
+    if (cat) { userSession[num] = { menu: 'produtos', categoria: cat, pagina: 0 }; return client.sendMessage(num, await listarProdutos(num, cat)); }
+  }
+
+  if (userSession[num] && userSession[num].menu === 'visualizando_cadastro') {
+    if (tl === '1') { userSession[num] = { menu: 'editando_nome' }; return client.sendMessage(num, 'Digite o novo *nome*:\n\n0. 🔙 Cancelar'); }
+    if (tl === '2') { userSession[num] = { menu: 'editando_endereco' }; return client.sendMessage(num, 'Digite o novo *endereco*:\n\n0. 🔙 Cancelar'); }
+    if (tl === '3') { userSession[num] = { menu: 'editando_cidade' }; return client.sendMessage(num, 'Digite a nova *cidade*:\n\n0. 🔙 Cancelar'); }
+    if (tl === '4') { userSession[num] = { menu: 'confirmar_exclusao' }; return client.sendMessage(num, 'Tem certeza? Digite *sim* ou *nao*.'); }
+  }
+
+  client.sendMessage(num, 'Nao entendi. Digite *menu* para comecar.');
+});
+
+client.initialize();
+BOTEOF
+
+# ==============================================================
+# DOCKER
+# ==============================================================
+
 if ! command -v docker >/dev/null 2>&1; then
   info "Instalando Docker..."
   apt-get update -qq && apt-get install -y -qq docker.io
@@ -69,75 +1078,151 @@ if ! command -v nginx >/dev/null 2>&1; then
   apt-get install -y -qq nginx
 fi
 
-# Inputs
-printf "Porta do app (host) [3000]: "; read -r APP_PORT
-APP_PORT=${APP_PORT:-3000}
-
-printf "Nome do banco [ecommerce_db]: "; read -r DB_NAME
-DB_NAME=${DB_NAME:-ecommerce_db}
-
-DB_USER=postgres
-DB_PASS=wander
-API_TOKEN=$(openssl rand -hex 32)
-
-# .env
-info "Criando .env"
-cat > "$INSTALL_DIR/.env" <<ENVEOF
-PORT=$APP_PORT
-DB_NAME=$DB_NAME
-DB_USER=$DB_USER
-DB_PASS=$DB_PASS
-API_TOKEN=$API_TOKEN
-ENVEOF
-chmod 600 "$INSTALL_DIR/.env"
-
 # Nginx
 info "Configurando Nginx..."
 NGINX_LOCATIONS="/etc/nginx/${PROJECT_NAME}-locations.conf"
-cat > "$NGINX_LOCATIONS" <<NGINXEOF
-location /${PROJECT_NAME}/ {
-    proxy_pass http://127.0.0.1:${APP_PORT}/;
+
+if [ "$NGINX_PATH" = "/" ]; then
+  NGINX_ROOT="$INSTALL_DIR"
+  cat > "$NGINX_LOCATIONS" << NGINXEOF
+location / {
+    root ${NGINX_ROOT};
+    try_files \$uri \$uri/ /index.html;
+}
+location /api/ {
+    proxy_pass http://127.0.0.1:${APP_PORT}/api/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
     proxy_set_header X-Real-IP \$remote_addr;
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto \$scheme;
 }
+location /data/ {
+    proxy_pass http://127.0.0.1:${APP_PORT}/data/;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+}
+location /health {
+    proxy_pass http://127.0.0.1:${APP_PORT}/health;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+}
 NGINXEOF
+else
+  NGINX_ROOT=$(dirname "$INSTALL_DIR")
+  cat > "$NGINX_LOCATIONS" << NGINXEOF
+location ${NGINX_PATH}/ {
+    root ${NGINX_ROOT};
+    try_files \$uri \$uri/ ${NGINX_PATH}/index.html;
+}
+location ${NGINX_PATH}/api/ {
+    proxy_pass http://127.0.0.1:${APP_PORT}/api/;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+}
+location ${NGINX_PATH}/data/ {
+    proxy_pass http://127.0.0.1:${APP_PORT}/data/;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+}
+location ${NGINX_PATH}/health {
+    proxy_pass http://127.0.0.1:${APP_PORT}/health;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+}
+NGINXEOF
+fi
 
-if [ -f "$NGINX_CONF" ]; then
-  if ! grep -q "${PROJECT_NAME}-locations.conf" "$NGINX_CONF"; then
-    sed -i "/^\s*server_name .*;$/a\    include ${NGINX_LOCATIONS};" "$NGINX_CONF"
+if [ -f /etc/nginx/sites-available/default ]; then
+  if ! grep -q "${PROJECT_NAME}-locations.conf" /etc/nginx/sites-available/default; then
+    sed -i "/^\s*server_name .*;$/a\    include ${NGINX_LOCATIONS};" /etc/nginx/sites-available/default
   fi
 fi
 
-# Docker Compose
+# Replace __API_BASE__ placeholder
+if [ "$NGINX_PATH" = "/" ]; then
+  API_BASE_VAL=""
+else
+  API_BASE_VAL="${NGINX_PATH}"
+fi
+sed -i "s|__API_BASE__|$API_BASE_VAL|g" "$INSTALL_DIR/index.html"
+
+# Build & start
 info "Fazendo build..."
 $DOCKER_COMPOSE_CMD -f "$INSTALL_DIR/docker-compose.yml" build
 
 info "Iniciando containers..."
 $DOCKER_COMPOSE_CMD -f "$INSTALL_DIR/docker-compose.yml" --project-name "$PROJECT_NAME" up -d
 
+# Wait for API
 info "Aguardando API..."
 sleep 5
 for i in $(seq 1 30); do
   if curl -sf "http://127.0.0.1:$APP_PORT/health" >/dev/null 2>&1; then
-    info "API saudável após ${i}s!"
+    info "API saudavel apos ${i}s!"
+    info "Seed de produtos..."
+    curl -sf -X POST "http://127.0.0.1:$APP_PORT/api/produtos/seed" \
+      -H "X-Write-Key: $API_TOKEN" >/dev/null 2>&1 && \
+      info "Produtos importados com sucesso!" || \
+      warn "Falha ao importar produtos (pode fazer manualmente com POST /api/produtos/seed)"
     break
   fi
   sleep 1
 done
 
-if nginx -t 2>/dev/null; then
-  systemctl reload nginx.service 2>/dev/null && info "Nginx recarregado"
+NGINX_BIN=$(command -v nginx || echo "/usr/sbin/nginx")
+if [ -x "$NGINX_BIN" ]; then
+  if "$NGINX_BIN" -t 2>/dev/null; then
+    systemctl reload nginx.service 2>/dev/null && info "Nginx recarregado" || \
+      "$NGINX_BIN" -s reload 2>/dev/null && info "Nginx recarregado"
+  else
+    warn "Config do nginx invalida. Execute manualmente: $NGINX_BIN -t"
+  fi
+fi
+
+# Teste da API via nginx
+sleep 1
+API_PATH="${NGINX_PATH}"
+[ "$API_PATH" = "/" ] && API_PATH=""
+info "Testando API externa via nginx..."
+if curl -sf "http://localhost${API_PATH}/health" >/dev/null 2>&1; then
+  info "API externa saudavel! (http://localhost${API_PATH}/health)"
+else
+  warn "API externa nao respondeu. Verifique a config do nginx."
 fi
 
 echo ""
-info "===== Instalação concluída! ====="
+info "===== Instalacao concluida! ====="
 echo ""
-echo "  URL:     http://localhost:$APP_PORT/"
-echo "  API:     http://localhost:$APP_PORT/health"
-echo "  Token:   $API_TOKEN"
+echo "  Diretorio: $INSTALL_DIR"
+echo "  Porta:     $APP_PORT (host) -> 3000 (container)"
+echo "  Token:     $API_TOKEN"
 echo ""
-echo "  Para acessar: http://SEU_IP/$PROJECT_NAME/"
+echo "  Testar API externa:"
+echo "  curl http://localhost${API_PATH}/health"
+echo "  curl http://localhost${API_PATH}/api/produtos"
+if [ -n "$EXTERNAL_DOMAIN" ]; then
+  echo "  curl https://${EXTERNAL_DOMAIN}${API_PATH}/health"
+  echo "  curl https://${EXTERNAL_DOMAIN}${API_PATH}/api/produtos"
+fi
+echo ""
+echo "  O arquivo index.js (bot WhatsApp) foi criado em: $INSTALL_DIR/index.js"
+echo ""
+echo "  Para executar o bot:"
+echo "  cd $INSTALL_DIR"
+echo "  npm install whatsapp-web.js qrcode-terminal puppeteer"
+echo "  API_URL=https://${EXTERNAL_DOMAIN:-localhost}${API_PATH} API_TOKEN=$API_TOKEN node index.js"
+echo ""
+echo "  Comandos do bot:"
+echo "  - Menu numerado com produtos, carrinho, cadastro"
+echo "  - comprar <id> - Adicionar ao carrinho"
+echo "  - finalizar - Confirmar pedido"
+echo "  - cadastro - Registrar usuario"
 echo ""

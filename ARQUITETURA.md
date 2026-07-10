@@ -15,10 +15,7 @@
 ## Componentes
 
 ### 1. Páginas Estáticas (Frontend)
-- `index.html` - Homepage com categorias e produtos em destaque
-- `paginas/produtos.html` - Catálogo de produtos (via API local)
-- `paginas/carrinho.html` - Carrinho (finalização via WhatsApp)
-- `paginas/contato.html` - Contato
+- `index.html` - Página única com QR code do WhatsApp e instruções do menu
 - `static/` - CSS, JS, ícones
 
 ### 2. API Node.js (Backend)
