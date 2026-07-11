@@ -421,7 +421,7 @@ fastify.get('/health', async () => {
 
 fastify.get('/ping', async () => ({ pong: true }));
 
-let botStatus = { qr: null, connected: false };
+let botStatus = { qr: null, pairingCode: null, connected: false };
 
 fastify.get('/api/qrcode', async () => botStatus);
 
@@ -447,8 +447,9 @@ fastify.get('/api/qrcode/stream', async (req, res) => {
 });
 
 fastify.post('/api/qrcode', { preHandler: writeAuthMiddleware }, async (req, res) => {
-  const { qr, connected } = req.body || {};
+  const { qr, pairingCode, connected } = req.body || {};
   if (qr !== undefined) botStatus.qr = qr;
+  if (pairingCode !== undefined) botStatus.pairingCode = pairingCode;
   if (connected !== undefined) botStatus.connected = connected;
   return { success: true };
 });
@@ -1419,17 +1420,6 @@ location ${URL_PREFIX}/ {
     try_files \$uri \$uri/ ${URL_PREFIX}/index.html;
 }
 location ${URL_PREFIX}/api/ {
-    if (\$request_method = OPTIONS) {
-        add_header Access-Control-Allow-Origin *;
-        add_header Access-Control-Allow-Methods 'GET, POST, PUT, DELETE, OPTIONS';
-        add_header Access-Control-Allow-Headers 'Content-Type, Authorization, X-Write-Key';
-        add_header Access-Control-Max-Age 86400;
-        add_header Content-Length 0;
-        return 204;
-    }
-    add_header Access-Control-Allow-Origin * always;
-    add_header Access-Control-Allow-Methods 'GET, POST, PUT, DELETE, OPTIONS' always;
-    add_header Access-Control-Allow-Headers 'Content-Type, Authorization, X-Write-Key' always;
     proxy_pass http://127.0.0.1:${APP_PORT}/api/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
@@ -1441,21 +1431,12 @@ location ${URL_PREFIX}/api/ {
     chunked_transfer_encoding off;
 }
 location ${URL_PREFIX}/data/ {
-    if (\$request_method = OPTIONS) {
-        add_header Access-Control-Allow-Origin *;
-        add_header Access-Control-Allow-Methods 'GET, OPTIONS';
-        add_header Access-Control-Allow-Headers 'Content-Type, Authorization';
-        add_header Content-Length 0;
-        return 204;
-    }
-    add_header Access-Control-Allow-Origin * always;
     proxy_pass http://127.0.0.1:${APP_PORT}/data/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
     proxy_set_header X-Real-IP \$remote_addr;
 }
 location ${URL_PREFIX}/health {
-    add_header Access-Control-Allow-Origin * always;
     proxy_pass http://127.0.0.1:${APP_PORT}/health;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;

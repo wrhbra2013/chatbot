@@ -32,13 +32,21 @@
                         <p style="color:#666;">O bot esta pronto para receber pedidos.</p>
                     </div>
                     <div id="qr-status-scan" style="display:none;">
-                        <h3>&#128241; Escaneie o QR Code</h3>
-                        <p style="color:#555;margin-bottom:0.5rem;">Abra o WhatsApp &gt; Configuracoes &gt; Aparelhos conectados &gt; Conectar aparelho</p>
-                        <div id="qrcode-container" style="display:inline-block;padding:1rem;background:#fff;border-radius:12px;margin:0.5rem 0;"></div>
-                        <p id="qr-timer" style="font-size:0.8rem;color:#999;margin-top:0.5rem;"></p>
+                        <div id="pairing-mode" style="display:none;">
+                            <h3>&#128241; Parear com Codigo</h3>
+                            <p style="color:#555;margin-bottom:0.5rem;">Abra o WhatsApp &gt; Aparelhos conectados &gt; Conectar aparelho &gt; Conectar com numero do telefone</p>
+                            <div id="pairing-code-container" style="font-size:2.5rem;font-weight:bold;letter-spacing:0.3em;color:#2a254b;background:#f0f0f5;padding:1rem 2rem;border-radius:12px;display:inline-block;margin:0.5rem 0;"></div>
+                            <p id="pairing-timer" style="font-size:0.8rem;color:#999;margin-top:0.5rem;"></p>
+                        </div>
+                        <div id="qr-mode" style="display:none;">
+                            <h3>&#128241; Escaneie o QR Code</h3>
+                            <p style="color:#555;margin-bottom:0.5rem;">Abra o WhatsApp &gt; Configuracoes &gt; Aparelhos conectados &gt; Conectar aparelho</p>
+                            <div id="qrcode-container" style="display:inline-block;padding:1rem;background:#fff;border-radius:12px;margin:0.5rem 0;"></div>
+                            <p id="qr-timer" style="font-size:0.8rem;color:#999;margin-top:0.5rem;"></p>
+                        </div>
                         <p style="margin-top:1rem;">
                             <a id="whatsapp-link" href="#" target="_blank" style="display:inline-block;background:#25D366;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">
-                                &#128172; Abrir WhatsApp Web
+                                &#128172; Abrir WhatsApp
                             </a>
                         </p>
                     </div>
@@ -46,9 +54,9 @@
             </section>
             <section class="section text-center">
                 <div class="card" style="max-width:500px;margin:0 auto;">
-                    <h3>📱 Como Funciona</h3>
+                    <h3>&#128241; Como Funciona</h3>
                     <ol style="text-align:left;">
-                        <li>Clique no botao <strong>Fale Conosco</strong> ou escaneie o QR code</li>
+                        <li>Clique no botao <strong>Fale Conosco</strong> ou pareie o aparelho</li>
                         <li>Abra o WhatsApp e envie <strong>1</strong> para ver produtos</li>
                         <li>Envie <strong>comprar &lt;id&gt;</strong> para adicionar ao carrinho</li>
                         <li>Envie <strong>4</strong> para finalizar o pedido</li>
@@ -87,10 +95,26 @@
                 showState('connected');
                 return;
             }
+            if (data.pairingCode) {
+                if (lastQR !== data.pairingCode) {
+                    lastQR = data.pairingCode;
+                    showState('scan');
+                    document.getElementById('qr-mode').style.display = 'none';
+                    document.getElementById('pairing-mode').style.display = 'block';
+                    document.getElementById('pairing-code-container').textContent = data.pairingCode;
+                    qrStartTime = Date.now();
+                }
+                var elapsed = Math.floor((Date.now() - qrStartTime) / 1000);
+                var remaining = Math.max(0, 120 - elapsed);
+                document.getElementById('pairing-timer').textContent = remaining > 0 ? 'Expira em ' + remaining + 's' : 'Codigo expirado, aguarde novo...';
+                return;
+            }
             if (data.qr) {
                 if (lastQR !== data.qr) {
                     lastQR = data.qr;
                     showState('scan');
+                    document.getElementById('pairing-mode').style.display = 'none';
+                    document.getElementById('qr-mode').style.display = 'block';
                     renderQR(data.qr);
                 }
                 var elapsed = Math.floor((Date.now() - qrStartTime) / 1000);
@@ -147,10 +171,18 @@
 
         fetchQR();
         setInterval(function() {
+            var elapsed = Math.floor((Date.now() - qrStartTime) / 1000);
             if (currentStatus === 'scan' && qrStartTime > 0) {
-                var remaining = Math.max(0, 20 - Math.floor((Date.now() - qrStartTime) / 1000));
-                var el = document.getElementById('qr-timer');
-                if (el) el.textContent = remaining > 0 ? 'Expira em ' + remaining + 's - Escaneie rapido!' : 'QR expirado, aguarde novo...';
+                var pairingEl = document.getElementById('pairing-code-container');
+                if (pairingEl && pairingEl.textContent && document.getElementById('pairing-mode').style.display !== 'none') {
+                    var remaining = Math.max(0, 120 - elapsed);
+                    var el = document.getElementById('pairing-timer');
+                    if (el) el.textContent = remaining > 0 ? 'Expira em ' + remaining + 's' : 'Codigo expirado, aguarde novo...';
+                } else {
+                    var remaining = Math.max(0, 20 - elapsed);
+                    var el = document.getElementById('qr-timer');
+                    if (el) el.textContent = remaining > 0 ? 'Expira em ' + remaining + 's - Escaneie rapido!' : 'QR expirado, aguarde novo...';
+                }
             }
         }, 1000);
     </script>
