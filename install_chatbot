@@ -77,7 +77,19 @@ if [ "${1:-}" = "uninstall" ]; then
 
   # Remove diretorio
   info "Removendo $UNINSTALL_DIR..."
-  rm -rf "$UNINSTALL_DIR"
+  if [ -f "$UNINSTALL_DIR/.env" ] && [ -n "$DB_NAME" ]; then
+    if grep -q "DB_NAME=${DB_NAME}" "$UNINSTALL_DIR/.env" 2>/dev/null; then
+      rm -rf "$UNINSTALL_DIR"
+      info "Diretorio $UNINSTALL_DIR removido (DB_NAME=$DB_NAME confirmado)."
+    else
+      warn "AVISO: .env em $UNINSTALL_DIR nao contem DB_NAME=$DB_NAME"
+      warn "Possivelmente pertence a outro projeto. Remocao cancelada."
+      warn "Para forcar: rm -rf $UNINSTALL_DIR"
+    fi
+  else
+    rm -rf "$UNINSTALL_DIR"
+    info "Diretorio $UNINSTALL_DIR removido."
+  fi
 
   info "Desinstalacao concluida!"
   exit 0
@@ -87,13 +99,59 @@ echo ""
 info "===== Instalacao do Catalogo WhatsApp (Docker) ====="
 echo ""
 
+# ---- Mapear portas ja utilizadas ----
+info "Verificando portas em uso..."
+echo ""
+PORTS_IN_USE=""
+if command -v ss >/dev/null 2>&1; then
+  PORTS_IN_USE=$(ss -tlnp 2>/dev/null | awk 'NR>1 {split($4,a,":"); print a[length(a)]}' | sort -un | tr '\n' ' ')
+elif command -v lsof >/dev/null 2>&1; then
+  PORTS_IN_USE=$(lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null | awk 'NR>1 {split($9,a,":"); print a[length(a)]}' | sort -un | tr '\n' ' ')
+fi
+
+if [ -n "$PORTS_IN_USE" ]; then
+  warn "Portas em uso no servidor: $PORTS_IN_USE"
+  echo ""
+  echo "  Portas comuns para apps Docker:"
+  for p in 3000 3001 3002 3003 3004 3005 5000 8080 8443; do
+    if echo "$PORTS_IN_USE" | grep -qw "$p"; then
+      echo "    $p  [OCUPADA]"
+    else
+      echo "    $p  [livre]"
+    fi
+  done
+  echo ""
+else
+  info "Nenhuma porta em uso detectada."
+  echo ""
+fi
+
 # Inputs
 DEFAULT_DIR="/var/www/ecommerce"
 printf "Diretorio de instalacao [${DEFAULT_DIR}]: "; read -r INSTALL_DIR
 INSTALL_DIR=${INSTALL_DIR:-$DEFAULT_DIR}
 
-printf "Porta do app (host) [3000]: "; read -r APP_PORT
-APP_PORT=${APP_PORT:-3000}
+while :; do
+  printf "Porta do app (host) [3000]: "; read -r APP_PORT
+  APP_PORT=${APP_PORT:-3000}
+  if echo "$PORTS_IN_USE" | grep -qw "$APP_PORT"; then
+    warn "Porta $APP_PORT esta em uso!"
+    printf "  (M)atar processo na porta, (T)rocar porta, (C)ancelar [M/t/c]: "; read -r PORT_ACT
+    case "$PORT_ACT" in
+      [Tt]) continue ;;
+      [Cc]) error "Instalacao cancelada" ;;
+      *)
+        if command -v fuser >/dev/null 2>&1; then
+          fuser -k "$APP_PORT/tcp" 2>/dev/null && info "Processo na porta $APP_PORT encerrado" || warn "Nao foi possivel encerrar"
+        elif command -v lsof >/dev/null 2>&1; then
+          lsof -ti tcp:"$APP_PORT" 2>/dev/null | xargs kill -9 2>/dev/null && info "Processo na porta $APP_PORT encerrado" || warn "Nao foi possivel encerrar"
+        fi
+        sleep 1
+        ;;
+    esac
+  fi
+  break
+done
 
 printf "Nome do banco [ecommerce_db]: "; read -r DB_NAME
 DB_NAME=${DB_NAME:-ecommerce_db}
@@ -105,6 +163,13 @@ printf "Dominio externo (ex: api.projetosdinamicos.com.br) [api.projetosdinamico
 EXTERNAL_DOMAIN=${EXTERNAL_DOMAIN:-api.projetosdinamicos.com.br}
 
 PROJECT_NAME=$(basename "$INSTALL_DIR")
+
+# Sempre usar o nome do projeto como prefixo para diferenciar apps no mesmo dominio
+if [ "$NGINX_PATH" = "/" ]; then
+  URL_PREFIX="/${PROJECT_NAME}"
+else
+  URL_PREFIX="$NGINX_PATH"
+fi
 
 DB_USER=postgres
 DB_PASS=$(openssl rand -hex 16)
@@ -121,14 +186,15 @@ cat > "$INSTALL_DIR/docker-compose.yml" << DOCKERCOMPOSE
 services:
   db:
     image: postgres:16-alpine
+    container_name: ${PROJECT_NAME}-db
     environment:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASS}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - ${INSTALL_DIR}/pgdata:/var/lib/postgresql/data
     networks:
-      - app-network
+      - ${PROJECT_NAME}-net
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
@@ -139,6 +205,7 @@ services:
 
   api:
     build: api/
+    container_name: ${PROJECT_NAME}-api
     ports:
       - "127.0.0.1:${APP_PORT}:${APP_PORT}"
     environment:
@@ -155,15 +222,12 @@ services:
       db:
         condition: service_healthy
     networks:
-      - app-network
+      - ${PROJECT_NAME}-net
     restart: unless-stopped
 
 networks:
-  app-network:
+  ${PROJECT_NAME}-net:
     driver: bridge
-
-volumes:
-  pgdata:
 DOCKERCOMPOSE
 
 info "Criando api/Dockerfile..."
@@ -206,6 +270,7 @@ DB_PASS=${DB_PASS}
 API_TOKEN=${API_TOKEN}
 EXTERNAL_DOMAIN=${EXTERNAL_DOMAIN}
 NGINX_PATH=${NGINX_PATH}
+URL_PREFIX=${URL_PREFIX}
 ENVEOF
 chmod 600 "$INSTALL_DIR/.env"
 
@@ -1158,14 +1223,13 @@ fi
 info "Configurando Nginx..."
 NGINX_LOCATIONS="/etc/nginx/${PROJECT_NAME}-locations.conf"
 
-if [ "$NGINX_PATH" = "/" ]; then
-  NGINX_ROOT="$INSTALL_DIR"
-  cat > "$NGINX_LOCATIONS" << NGINXEOF
-location / {
+NGINX_ROOT=$(dirname "$INSTALL_DIR")
+cat > "$NGINX_LOCATIONS" << NGINXEOF
+location ${URL_PREFIX}/ {
     root ${NGINX_ROOT};
-    try_files \$uri \$uri/ /index.html;
+    try_files \$uri \$uri/ ${URL_PREFIX}/index.html;
 }
-location /api/ {
+location ${URL_PREFIX}/api/ {
     proxy_pass http://127.0.0.1:${APP_PORT}/api/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
@@ -1173,48 +1237,19 @@ location /api/ {
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto \$scheme;
 }
-location /data/ {
+location ${URL_PREFIX}/data/ {
     proxy_pass http://127.0.0.1:${APP_PORT}/data/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
     proxy_set_header X-Real-IP \$remote_addr;
 }
-location /health {
+location ${URL_PREFIX}/health {
     proxy_pass http://127.0.0.1:${APP_PORT}/health;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
     proxy_set_header X-Real-IP \$remote_addr;
 }
 NGINXEOF
-else
-  NGINX_ROOT=$(dirname "$INSTALL_DIR")
-  cat > "$NGINX_LOCATIONS" << NGINXEOF
-location ${NGINX_PATH}/ {
-    root ${NGINX_ROOT};
-    try_files \$uri \$uri/ ${NGINX_PATH}/index.html;
-}
-location ${NGINX_PATH}/api/ {
-    proxy_pass http://127.0.0.1:${APP_PORT}/api/;
-    proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto \$scheme;
-}
-location ${NGINX_PATH}/data/ {
-    proxy_pass http://127.0.0.1:${APP_PORT}/data/;
-    proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-}
-location ${NGINX_PATH}/health {
-    proxy_pass http://127.0.0.1:${APP_PORT}/health;
-    proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-}
-NGINXEOF
-fi
 
 if [ -f /etc/nginx/sites-available/default ]; then
   if ! grep -q "${PROJECT_NAME}-locations.conf" /etc/nginx/sites-available/default; then
@@ -1223,11 +1258,7 @@ if [ -f /etc/nginx/sites-available/default ]; then
 fi
 
 # Replace __API_BASE__ placeholder
-if [ "$NGINX_PATH" = "/" ]; then
-  API_BASE_VAL=""
-else
-  API_BASE_VAL="${NGINX_PATH}"
-fi
+API_BASE_VAL="${URL_PREFIX}"
 sed -i "s|__API_BASE__|$API_BASE_VAL|g" "$INSTALL_DIR/index.html"
 
 # Build & start
@@ -1265,8 +1296,7 @@ fi
 
 # Teste da API via nginx
 sleep 1
-API_PATH="${NGINX_PATH}"
-[ "$API_PATH" = "/" ] && API_PATH=""
+API_PATH="${URL_PREFIX}"
 info "Testando API externa via nginx..."
 if curl -sf "http://localhost${API_PATH}/health" >/dev/null 2>&1; then
   info "API externa saudavel! (http://localhost${API_PATH}/health)"
