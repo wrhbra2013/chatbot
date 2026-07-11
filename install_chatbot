@@ -175,7 +175,7 @@ DB_USER=postgres
 DB_PASS=$(openssl rand -hex 16)
 API_TOKEN=$(openssl rand -hex 32)
 
-mkdir -p "$INSTALL_DIR/api/src" "$INSTALL_DIR/static/css" "$INSTALL_DIR/static/js" "$INSTALL_DIR/data"
+mkdir -p "$INSTALL_DIR/api/src" "$INSTALL_DIR/bot" "$INSTALL_DIR/static/css" "$INSTALL_DIR/static/js" "$INSTALL_DIR/data"
 
 # ==============================================================
 # ARQUIVOS VIA HEREDOC
@@ -225,6 +225,25 @@ services:
       - ${PROJECT_NAME}-net
     restart: unless-stopped
 
+  bot:
+    build: bot/
+    container_name: ${PROJECT_NAME}-bot
+    environment:
+      API_URL: http://api:${APP_PORT}
+      API_TOKEN: ${API_TOKEN}
+      SOCKS_PROXY: ${SOCKS_PROXY:-}
+      PHONE_NUMBER: ${PHONE_NUMBER:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${INSTALL_DIR}/bot/auth_info:/app/auth_info
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      - ${PROJECT_NAME}-net
+    restart: unless-stopped
+
 networks:
   ${PROJECT_NAME}-net:
     driver: bridge
@@ -240,6 +259,34 @@ COPY src/ ./src/
 EXPOSE 3000
 CMD ["node", "src/server.js"]
 DOCKERFILE
+
+info "Criando bot/Dockerfile..."
+cat > "$INSTALL_DIR/bot/Dockerfile" << BOTDOCKERFILE
+FROM node:20-alpine
+RUN apk add --no-cache git
+WORKDIR /app
+COPY package.json ./
+RUN npm install --production
+COPY index.js ./
+CMD ["node", "index.js"]
+BOTDOCKERFILE
+
+info "Criando bot/package.json..."
+cat > "$INSTALL_DIR/bot/package.json" << BOTPKGJSON
+{
+  "name": "ecommerce-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.16",
+    "qrcode-terminal": "^0.12.0",
+    "socks-proxy-agent": "^8.0.5"
+  }
+}
+BOTPKGJSON
 
 info "Criando api/package.json..."
 cat > "$INSTALL_DIR/api/package.json" << PKGJSON
@@ -271,6 +318,8 @@ API_TOKEN=${API_TOKEN}
 EXTERNAL_DOMAIN=${EXTERNAL_DOMAIN}
 NGINX_PATH=${NGINX_PATH}
 URL_PREFIX=${URL_PREFIX}
+SOCKS_PROXY=${SOCKS_PROXY:-}
+PHONE_NUMBER=${PHONE_NUMBER:-5514981305888}
 ENVEOF
 chmod 600 "$INSTALL_DIR/.env"
 
@@ -382,6 +431,8 @@ fastify.get('/api/qrcode/stream', async (req, res) => {
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
     'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   });
   res.hijack();
   const send = (data) => {
@@ -762,6 +813,13 @@ async function initDB() {
   }
 }
 
+fastify.setNotFoundHandler(async (req, reply) => {
+  reply.header('Access-Control-Allow-Origin', '*');
+  reply.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Write-Key');
+  reply.code(404).send({ error: 'Not found' });
+});
+
 const start = async () => {
   await initDB();
   const PORT = process.env.PORT || 3000;
@@ -829,13 +887,21 @@ cat > "$INSTALL_DIR/index.html" << INDEXHTML
                         <p style="color:#666;">O bot esta pronto para receber pedidos.</p>
                     </div>
                     <div id="qr-status-scan" style="display:none;">
-                        <h3>&#128241; Escaneie o QR Code</h3>
-                        <p style="color:#555;margin-bottom:0.5rem;">Abra o WhatsApp &gt; Configuracoes &gt; Aparelhos conectados &gt; Conectar aparelho</p>
-                        <div id="qrcode-container" style="display:inline-block;padding:1rem;background:#fff;border-radius:12px;margin:0.5rem 0;"></div>
-                        <p id="qr-timer" style="font-size:0.8rem;color:#999;margin-top:0.5rem;"></p>
+                        <div id="qr-mode" style="display:none;">
+                            <h3>&#128241; Escaneie o QR Code</h3>
+                            <p style="color:#555;margin-bottom:0.5rem;">Abra o WhatsApp &gt; Configuracoes &gt; Aparelhos conectados &gt; Conectar aparelho</p>
+                            <div id="qrcode-container" style="display:inline-block;padding:1rem;background:#fff;border-radius:12px;margin:0.5rem 0;"></div>
+                            <p id="qr-timer" style="font-size:0.8rem;color:#999;margin-top:0.5rem;"></p>
+                        </div>
+                        <div id="pairing-mode" style="display:none;">
+                            <h3>&#128241; Parear com Codigo</h3>
+                            <p style="color:#555;margin-bottom:0.5rem;">Abra o WhatsApp &gt; Aparelhos conectados &gt; Conectar aparelho &gt; Conectar com numero do telefone</p>
+                            <div id="pairing-code-container" style="font-size:2.5rem;font-weight:bold;letter-spacing:0.3em;color:#2a254b;background:#f0f0f5;padding:1rem 2rem;border-radius:12px;display:inline-block;margin:0.5rem 0;"></div>
+                            <p id="pairing-timer" style="font-size:0.8rem;color:#999;margin-top:0.5rem;"></p>
+                        </div>
                         <p style="margin-top:1rem;">
                             <a id="whatsapp-link" href="#" target="_blank" style="display:inline-block;background:#25D366;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">
-                                &#128172; Abrir WhatsApp Web
+                                &#128172; Abrir WhatsApp
                             </a>
                         </p>
                     </div>
@@ -884,10 +950,26 @@ cat > "$INSTALL_DIR/index.html" << INDEXHTML
                 showState('connected');
                 return;
             }
+            if (data.pairingCode) {
+                if (lastQR !== data.pairingCode) {
+                    lastQR = data.pairingCode;
+                    showState('scan');
+                    document.getElementById('qr-mode').style.display = 'none';
+                    document.getElementById('pairing-mode').style.display = 'block';
+                    document.getElementById('pairing-code-container').textContent = data.pairingCode;
+                    qrStartTime = Date.now();
+                }
+                var elapsed = Math.floor((Date.now() - qrStartTime) / 1000);
+                var remaining = Math.max(0, 120 - elapsed);
+                document.getElementById('pairing-timer').textContent = remaining > 0 ? 'Expira em ' + remaining + 's' : 'Codigo expirado, aguarde novo...';
+                return;
+            }
             if (data.qr) {
                 if (lastQR !== data.qr) {
                     lastQR = data.qr;
                     showState('scan');
+                    document.getElementById('pairing-mode').style.display = 'none';
+                    document.getElementById('qr-mode').style.display = 'block';
                     renderQR(data.qr);
                 }
                 var elapsed = Math.floor((Date.now() - qrStartTime) / 1000);
@@ -946,9 +1028,16 @@ cat > "$INSTALL_DIR/index.html" << INDEXHTML
         setInterval(function() {
             var elapsed = Math.floor((Date.now() - qrStartTime) / 1000);
             if (currentStatus === 'scan' && qrStartTime > 0) {
-                var remaining = Math.max(0, 20 - elapsed);
-                var el = document.getElementById('qr-timer');
-                if (el) el.textContent = remaining > 0 ? 'Expira em ' + remaining + 's - Escaneie rapido!' : 'QR expirado, aguarde novo...';
+                var pairingEl = document.getElementById('pairing-code-container');
+                if (pairingEl && pairingEl.textContent && document.getElementById('pairing-mode').style.display !== 'none') {
+                    var remaining = Math.max(0, 120 - elapsed);
+                    var el = document.getElementById('pairing-timer');
+                    if (el) el.textContent = remaining > 0 ? 'Expira em ' + remaining + 's' : 'Codigo expirado, aguarde novo...';
+                } else {
+                    var remaining = Math.max(0, 20 - elapsed);
+                    var el = document.getElementById('qr-timer');
+                    if (el) el.textContent = remaining > 0 ? 'Expira em ' + remaining + 's - Escaneie rapido!' : 'QR expirado, aguarde novo...';
+                }
             }
         }, 1000);
     </script>
@@ -1087,6 +1176,7 @@ info "Criando index.js (bot WhatsApp com Baileys)..."
 cat > "$INSTALL_DIR/index.js" << 'BOTEOF'
 import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
+import { SocksProxyAgent } from 'socks-proxy-agent';
 
 const API_BASE = process.env.API_URL || 'http://localhost:3000';
 const API_TOKEN = process.env.API_TOKEN || 'ecommerce-api-token';
@@ -1159,14 +1249,23 @@ async function enviar(s, j, t) { await s.sendMessage(j, { text: t }); }
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info');
-  const sock = makeWASocket({ auth: state, printQRInTerminal: true, syncFullHistory: false, browser: ['Ecommerce Bot', 'Chrome', '1.0'] });
+  const sock = makeWASocket({ auth: state, syncFullHistory: false, browser: ['Ecommerce Bot', 'Chrome', '1.0'], ...(process.env.SOCKS_PROXY ? { agent: new SocksProxyAgent(process.env.SOCKS_PROXY) } : {}) });
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('connection.update', async (up) => {
     const { connection, lastDisconnect, qr } = up;
     if (qr) {
       qrcode.generate(qr, { small: true });
-      try { await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr, connected: false }) }); } catch (e) {}
+      const phone = (process.env.PHONE_NUMBER || '').replace(/\D/g, '');
+      if (phone) {
+        try {
+          const code = await sock.requestPairingCode(phone);
+          console.log('Pairing code:', code);
+          await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr, pairingCode: code, connected: false }) });
+        } catch (e) { console.error('Pairing code error:', e.message); }
+      } else {
+        try { await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr, connected: false }) }); } catch (e) {}
+      }
     }
     if (connection === 'open') {
       console.log('Chatbot de e-commerce online (Baileys)!');
@@ -1176,7 +1275,7 @@ async function startBot() {
       const recon = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
       console.log('Conexao fechada, reconectando:', recon);
       try { await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr: null, connected: false }) }); } catch (e) {}
-      if (recon) setTimeout(startBot, 5000);
+      if (recon) { console.log('Tentando reconectar em 10s...'); setTimeout(startBot, 10000); }
     }
   });
 
@@ -1289,6 +1388,8 @@ async function startBot() {
 startBot();
 BOTEOF
 
+cp "$INSTALL_DIR/index.js" "$INSTALL_DIR/bot/index.js"
+
 # ==============================================================
 # DOCKER
 # ==============================================================
@@ -1318,6 +1419,17 @@ location ${URL_PREFIX}/ {
     try_files \$uri \$uri/ ${URL_PREFIX}/index.html;
 }
 location ${URL_PREFIX}/api/ {
+    if (\$request_method = OPTIONS) {
+        add_header Access-Control-Allow-Origin *;
+        add_header Access-Control-Allow-Methods 'GET, POST, PUT, DELETE, OPTIONS';
+        add_header Access-Control-Allow-Headers 'Content-Type, Authorization, X-Write-Key';
+        add_header Access-Control-Max-Age 86400;
+        add_header Content-Length 0;
+        return 204;
+    }
+    add_header Access-Control-Allow-Origin * always;
+    add_header Access-Control-Allow-Methods 'GET, POST, PUT, DELETE, OPTIONS' always;
+    add_header Access-Control-Allow-Headers 'Content-Type, Authorization, X-Write-Key' always;
     proxy_pass http://127.0.0.1:${APP_PORT}/api/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
@@ -1329,12 +1441,21 @@ location ${URL_PREFIX}/api/ {
     chunked_transfer_encoding off;
 }
 location ${URL_PREFIX}/data/ {
+    if (\$request_method = OPTIONS) {
+        add_header Access-Control-Allow-Origin *;
+        add_header Access-Control-Allow-Methods 'GET, OPTIONS';
+        add_header Access-Control-Allow-Headers 'Content-Type, Authorization';
+        add_header Content-Length 0;
+        return 204;
+    }
+    add_header Access-Control-Allow-Origin * always;
     proxy_pass http://127.0.0.1:${APP_PORT}/data/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
     proxy_set_header X-Real-IP \$remote_addr;
 }
 location ${URL_PREFIX}/health {
+    add_header Access-Control-Allow-Origin * always;
     proxy_pass http://127.0.0.1:${APP_PORT}/health;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
