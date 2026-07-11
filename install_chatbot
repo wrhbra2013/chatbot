@@ -376,6 +376,25 @@ let botStatus = { qr: null, connected: false };
 
 fastify.get('/api/qrcode', async () => botStatus);
 
+fastify.get('/api/qrcode/stream', async (req, res) => {
+  res.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.hijack();
+  const send = (data) => {
+    res.raw.write('data: ' + JSON.stringify(data) + '\n\n');
+  };
+  send(botStatus);
+  const interval = setInterval(() => send(botStatus), 1000);
+  req.raw.on('close', () => {
+    clearInterval(interval);
+  });
+  return res;
+});
+
 fastify.post('/api/qrcode', { preHandler: writeAuthMiddleware }, async (req, res) => {
   const { qr, connected } = req.body || {};
   if (qr !== undefined) botStatus.qr = qr;
@@ -793,20 +812,30 @@ cat > "$INSTALL_DIR/index.html" << INDEXHTML
     <main class="main-content">
         <div class="container">
             <section class="section">
-                <div id="whatsapp-status" class="card text-center" style="max-width:400px;margin:0 auto 2rem;">
-                    <div id="qr-status-loading"><p style="color:#888;">Iniciando conexao com WhatsApp...</p></div>
+                <div id="whatsapp-status" class="card text-center" style="max-width:420px;margin:0 auto 2rem;">
+                    <div id="qr-status-loading">
+                        <div style="font-size:2rem;margin-bottom:0.5rem;">&#128225;</div>
+                        <p style="color:#888;">Conectando ao servidor...</p>
+                    </div>
+                    <div id="qr-status-offline" style="display:none;">
+                        <div style="font-size:3rem;margin-bottom:0.5rem;">&#128308;</div>
+                        <h3 style="color:#dc3545;">Bot Offline</h3>
+                        <p style="color:#666;margin-bottom:1rem;">O bot WhatsApp nao esta rodando no momento.</p>
+                        <button onclick="fetchQR()" style="background:#6C63FF;color:#fff;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:bold;">&#128260; Tentar Novamente</button>
+                    </div>
                     <div id="qr-status-connected" style="display:none;">
-                        <div style="font-size:3rem;margin-bottom:0.5rem;">✅</div>
+                        <div style="font-size:3rem;margin-bottom:0.5rem;">&#9989;</div>
                         <h3 style="color:#28a745;">WhatsApp Conectado</h3>
                         <p style="color:#666;">O bot esta pronto para receber pedidos.</p>
                     </div>
                     <div id="qr-status-scan" style="display:none;">
-                        <h3>📱 Fale Conosco pelo WhatsApp</h3>
-                        <p style="color:#555;margin-bottom:1rem;">Escaneie o QR code ou clique no botao abaixo:</p>
-                        <div id="qrcode-container" style="display:inline-block;padding:1rem;background:#fff;border-radius:12px;"></div>
+                        <h3>&#128241; Escaneie o QR Code</h3>
+                        <p style="color:#555;margin-bottom:0.5rem;">Abra o WhatsApp &gt; Configuracoes &gt; Aparelhos conectados &gt; Conectar aparelho</p>
+                        <div id="qrcode-container" style="display:inline-block;padding:1rem;background:#fff;border-radius:12px;margin:0.5rem 0;"></div>
+                        <p id="qr-timer" style="font-size:0.8rem;color:#999;margin-top:0.5rem;"></p>
                         <p style="margin-top:1rem;">
                             <a id="whatsapp-link" href="#" target="_blank" style="display:inline-block;background:#25D366;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">
-                                💬 Fale Conosco
+                                &#128172; Abrir WhatsApp Web
                             </a>
                         </p>
                     </div>
@@ -830,39 +859,98 @@ cat > "$INSTALL_DIR/index.html" << INDEXHTML
     <script src="static/js/components.js?v=1.0.0"></script>
     <script>
         var WA_NUMBER = '5511999998888';
-        function mostrarWhatsApp(numero) {
-            var link = 'https://wa.me/' + numero.replace(/\D/g, '');
-            document.getElementById('qr-status-loading').style.display = 'none';
-            document.getElementById('qr-status-connected').style.display = 'none';
-            document.getElementById('qr-status-scan').style.display = 'block';
-            document.getElementById('whatsapp-link').href = link;
+        var lastQR = null;
+        var currentStatus = 'init';
+        var qrStartTime = 0;
+
+        function showState(state) {
+            ['qr-status-loading','qr-status-offline','qr-status-connected','qr-status-scan'].forEach(function(id) {
+                document.getElementById(id).style.display = 'none';
+            });
+            var map = { loading:'qr-status-loading', offline:'qr-status-offline', connected:'qr-status-connected', scan:'qr-status-scan' };
+            if (map[state]) document.getElementById(map[state]).style.display = 'block';
+        }
+
+        function renderQR(qrText) {
             var container = document.getElementById('qrcode-container');
             container.innerHTML = '';
-            new QRCode(container, { text: link, width: 256, height: 256, colorDark: '#2a254b', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.H });
+            new QRCode(container, { text: qrText, width: 256, height: 256, colorDark: '#2a254b', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.H });
+            qrStartTime = Date.now();
         }
-        function fetchQR() {
-            fetch(API_BASE + '/api/qrcode').then(function(r){return r.json();}).then(function(status) {
-                if (status.connected) {
-                    document.getElementById('qr-status-loading').style.display = 'none';
-                    document.getElementById('qr-status-scan').style.display = 'none';
-                    document.getElementById('qr-status-connected').style.display = 'block';
-                    return;
+
+        function updateQRStatus(data) {
+            if (data.connected) {
+                currentStatus = 'connected';
+                showState('connected');
+                return;
+            }
+            if (data.qr) {
+                if (lastQR !== data.qr) {
+                    lastQR = data.qr;
+                    showState('scan');
+                    renderQR(data.qr);
                 }
-                if (status.qr) {
-                    document.getElementById('qr-status-loading').style.display = 'none';
-                    document.getElementById('qr-status-connected').style.display = 'none';
-                    document.getElementById('qr-status-scan').style.display = 'block';
-                    var container = document.getElementById('qrcode-container'); container.innerHTML = '';
-                    new QRCode(container, { text: status.qr, width: 256, height: 256, colorDark: '#2a254b', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.H });
-                    return;
-                }
+                var elapsed = Math.floor((Date.now() - qrStartTime) / 1000);
+                var remaining = Math.max(0, 20 - elapsed);
+                document.getElementById('qr-timer').textContent = remaining > 0 ? 'Expira em ' + remaining + 's - Escaneie rapido!' : 'QR expirado, aguarde novo...';
+                return;
+            }
+            if (currentStatus !== 'offline') {
+                currentStatus = 'offline';
                 fetch(API_BASE + '/data/empresas').then(function(r){return r.json();}).then(function(lista) {
                     if (lista && lista.length && lista[0].whatsapp) WA_NUMBER = lista[0].whatsapp;
-                    mostrarWhatsApp(WA_NUMBER);
-                }).catch(function(){mostrarWhatsApp(WA_NUMBER);});
-            }).catch(function(){mostrarWhatsApp(WA_NUMBER);});
+                    var link = 'https://wa.me/' + WA_NUMBER.replace(/\D/g, '');
+                    document.getElementById('whatsapp-link').href = link;
+                }).catch(function(){});
+                showState('offline');
+            }
         }
-        fetchQR(); setInterval(fetchQR, 5000);
+
+        function startSSE() {
+            if (typeof EventSource === 'undefined') { startPolling(); return; }
+            var es = new EventSource(API_BASE + '/api/qrcode/stream');
+            es.onmessage = function(e) {
+                try { updateQRStatus(JSON.parse(e.data)); } catch(err) {}
+            };
+            es.onerror = function() {
+                es.close();
+                startPolling();
+            };
+        }
+
+        var pollInterval = null;
+        function startPolling() {
+            if (pollInterval) return;
+            pollInterval = setInterval(function() {
+                fetch(API_BASE + '/api/qrcode').then(function(r){return r.json();}).then(function(status) {
+                    updateQRStatus(status);
+                }).catch(function(){
+                    if (currentStatus !== 'offline') { currentStatus = 'offline'; showState('offline'); }
+                });
+            }, 3000);
+        }
+
+        function fetchQR() {
+            showState('loading');
+            currentStatus = 'init';
+            lastQR = null;
+            fetch(API_BASE + '/health').then(function(r){return r.json();}).then(function() {
+                startSSE();
+            }).catch(function(){
+                showState('offline');
+                startPolling();
+            });
+        }
+
+        fetchQR();
+        setInterval(function() {
+            var elapsed = Math.floor((Date.now() - qrStartTime) / 1000);
+            if (currentStatus === 'scan' && qrStartTime > 0) {
+                var remaining = Math.max(0, 20 - elapsed);
+                var el = document.getElementById('qr-timer');
+                if (el) el.textContent = remaining > 0 ? 'Expira em ' + remaining + 's - Escaneie rapido!' : 'QR expirado, aguarde novo...';
+            }
+        }, 1000);
     </script>
 </body>
 </html>
@@ -1088,7 +1176,7 @@ async function startBot() {
       const recon = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
       console.log('Conexao fechada, reconectando:', recon);
       try { await fetch(API_BASE + '/api/qrcode', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Write-Key': API_WRITE_KEY }, body: JSON.stringify({ qr: null, connected: false }) }); } catch (e) {}
-      if (recon) startBot();
+      if (recon) setTimeout(startBot, 5000);
     }
   });
 
@@ -1236,6 +1324,9 @@ location ${URL_PREFIX}/api/ {
     proxy_set_header X-Real-IP \$remote_addr;
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_buffering off;
+    proxy_cache off;
+    chunked_transfer_encoding off;
 }
 location ${URL_PREFIX}/data/ {
     proxy_pass http://127.0.0.1:${APP_PORT}/data/;
